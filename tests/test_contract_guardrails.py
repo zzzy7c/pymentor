@@ -27,7 +27,8 @@ SCAN_FILES = [
 FORBIDDEN_MODEL_IDS = ("deepseek-" + "chat", "deepseek-" + "reasoner")
 
 # 生成式 AI 集成包的构造点：全项目只允许出现于 llm/client.py（§2 单点所有权）。
-FORBIDDEN_LLM_CONSTRUCTORS = ("ChatDeepSeek", "ChatOpenAI")
+# ChatDeepSeekPatched 是阶段二的唯一模型类，同样只有 client.py 能构造它。
+FORBIDDEN_LLM_CONSTRUCTORS = ("ChatDeepSeek", "ChatDeepSeekPatched", "ChatOpenAI")
 LLM_CLIENT_PATH = REPO_ROOT / "src" / "pyassist" / "llm" / "client.py"
 
 FORBIDDEN_MODULE_NAMES = ("utils.py", "helpers.py", "common.py")
@@ -161,7 +162,11 @@ def test_no_exec_eval_or_subprocess_in_src() -> None:
 
 
 def test_no_direct_llm_construction_outside_client() -> None:
-    """§2：除 llm/client.py 外，不得直接构造 ChatDeepSeek / ChatOpenAI。"""
+    """§2：除 llm/client.py 外，不得直接构造 ChatDeepSeek / ChatDeepSeekPatched / ChatOpenAI。
+
+    只匹配 `ast.Call`，因此 `deepseek_chat.py` 里的 `class ChatDeepSeekPatched(...)`
+    定义（`ast.ClassDef`）不会误伤。
+    """
     offenders: set[str] = set()
     for path, module in _python_sources():
         if path == LLM_CLIENT_PATH:

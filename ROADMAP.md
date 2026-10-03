@@ -45,7 +45,7 @@
 | uv | ✅ 0.11.16 | 满足 §1 包管理要求 |
 | git | ✅ 2.54.0 | — |
 | **Docker** | ✅ 29.8.1 + Compose v5.5.1（插件形态）+ WSL2 Ubuntu（2026-10-03 装） | 阶段七沙箱可落地。**注意 Docker Hub 直连超时，须配 `registry-mirrors`** |
-| `DEEPSEEK_API_KEY` | ❌ 未设置 | 真实模型调用与启动校验跑不了，只能 mock |
+| `DEEPSEEK_API_KEY` | ✅ 已设置 | 真实模型调用与启动校验可落地 |
 
 ---
 
