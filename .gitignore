@@ -1,0 +1,136 @@
+# ============================================================
+#  密钥 / 环境变量 —— 绝不提交
+# ============================================================
+.env
+.env.*
+!.env.example
+!.env.template
+*.env
+
+# 各种变体写法，防止改名绕过
+.env.local
+.env.dev
+.env.development
+.env.prod
+.env.production
+.env.test
+.envrc
+
+# 密钥文件
+*.pem
+*.key
+*.p12
+*.pfx
+*.jks
+*.keystore
+*.ppk
+id_rsa*
+id_ed25519*
+api_key*.txt
+*apikey*
+*api_key*
+*secret*
+!*secret*.py
+!*secret*.md
+
+# 凭据 / 服务账号
+credentials.json
+client_secret*.json
+service_account*.json
+secrets.json
+secrets.yaml
+secrets.yml
+
+# Streamlit 密钥
+.streamlit/secrets.toml
+
+# ============================================================
+#  Python
+# ============================================================
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# 虚拟环境
+.venv/
+venv/
+ENV/
+env/
+env.bak/
+venv.bak/
+.python-version
+
+# 测试 / 覆盖率
+.pytest_cache/
+.tox/
+.nox/
+.coverage
+.coverage.*
+htmlcov/
+coverage.xml
+*.cover
+.hypothesis/
+nosetests.xml
+
+# 构建工具
+*.manifest
+*.spec
+pip-log.txt
+pip-delete-this-directory.txt
+Pipfile.lock  # 如需锁定依赖请删除本行
+
+# ============================================================
+#  编辑器 / IDE
+# ============================================================
+.vscode/*
+!.vscode/settings.json.example
+!.vscode/extensions.json
+.idea/
+*.swp
+*.swo
+*~
+.claude/settings.local.json
+
+# ============================================================
+#  操作系统
+# ============================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+Thumbs.db
+ehthumbs.db
+Desktop.ini
+$RECYCLE.BIN/
+
+# ============================================================
+#  日志 / 数据 / 运行时产物
+# ============================================================
+*.log
+logs/
+*.sqlite3
+*.db
+data/
+output/
+tmp/
+.cache/
