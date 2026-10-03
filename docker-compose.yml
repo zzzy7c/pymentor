@@ -12,7 +12,8 @@ services:
     environment:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
       DEEPSEEK_API_BASE_URL: ${DEEPSEEK_API_BASE_URL:-https://api.deepseek.com}
-      DATABASE_URL: ${DATABASE_URL:-sqlite+pysqlite:///data/app.db}
+      # 绝对路径口径与 config.DB_PATH 一致：容器内卷挂载点为 /app/data（见下方 volumes）。
+      DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////app/data/app.db}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON: ${LOG_JSON:-true}
     ports:

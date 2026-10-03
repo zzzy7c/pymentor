@@ -11,10 +11,11 @@ from __future__ import annotations
 from datetime import time as dt_time
 from decimal import Decimal
 from pathlib import Path
-from typing import Final
+from typing import Any, Final
 
 from pydantic import BaseModel, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
+from sqlalchemy.engine import make_url
 
 REPO_ROOT: Final = Path(__file__).resolve().parents[2]
 DATA_DIR: Final = REPO_ROOT / "data"
@@ -83,6 +84,57 @@ class SandboxLimits(BaseModel):
 SANDBOX_LIMITS: Final = SandboxLimits()
 
 
+# ---------- 数据库 ----------
+# 唯一的库文件路径常量。检查点、业务表、Store 都指向它（SPEC §2）。
+DB_PATH: Final = DATA_DIR / "app.db"
+
+# 同一路径的两种连接串：SQLAlchemy 用 URL，LangGraph 的 saver 用裸路径。
+# 二者都由 DB_PATH 派生，避免"两个路径常量早晚不一致"。
+
+SQLITE_BUSY_TIMEOUT_SECONDS: Final = 30
+"""SQLite 连接级忙等上限。
+
+同一个 `app.db` 会被**两条独立连接**写（SQLAlchemy 一条、检查点一条），
+没有它会立刻 `database is locked`。`journal_mode=WAL` 不在这里设 ——
+它是**库文件级持久属性**，由 `AsyncSqliteSaver.setup()` 设一次即全库生效。
+"""
+
+
+def build_engine_kwargs(database_url: str) -> dict[str, Any]:
+    """按 URL 方言给出引擎参数。**全项目唯一按方言分流的地方。**
+
+    `db/session.py` 只做 `create_async_engine(url, **build_engine_kwargs(url))`，
+    因此它不含任何方言字样（T7 有守护断言）。这不是"业务逻辑进 config"，
+    而是"把配置本身读对"——三个函数都是 `settings.database_url` 的纯派生。
+    """
+    backend = make_url(database_url).get_backend_name()
+    if backend == "sqlite":
+        return {"connect_args": {"timeout": SQLITE_BUSY_TIMEOUT_SECONDS}}
+    return {}
+
+
+def resolve_sqlite_path(database_url: str) -> Path:
+    """取 SQLite 库文件的**文件系统路径**（`AsyncSqliteSaver` 要裸路径，不是 URL）。
+
+    非 SQLite 后端直接报错：这个函数只在 SQLite 分支上被调用，
+    调用方（`agent/checkpointer.py` / `agent/store.py`）负责先判断后端。
+    """
+    url = make_url(database_url)
+    if url.get_backend_name() != "sqlite":
+        raise ValueError(f"resolve_sqlite_path 只适用于 SQLite，当前是 {url.database!r}")
+    if not url.database:
+        raise ValueError("DATABASE_URL 里没有库路径")
+    return Path(url.database)
+
+
+def to_psycopg_conninfo(database_url: str) -> str:
+    """把 SQLAlchemy 的 PG URL 转成 psycopg 的 conninfo（生产分支用）。
+
+    两个构造点（检查点、Store）都要这一句，所以只能有一个家 —— 这里是唯一实现。
+    """
+    return make_url(database_url).set(drivername="postgresql").render_as_string(hide_password=False)
+
+
 # ---------- 环境相关配置 ----------
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
@@ -93,7 +145,8 @@ class Settings(BaseSettings):
     deepseek_api_key: SecretStr | None = None
     deepseek_api_base_url: str = DEEPSEEK_API_BASE_URL
     # 绝对路径，避免阶段三的"检查点目标 == data/app.db"断言随 CWD 漂移。
-    database_url: str = f"sqlite+pysqlite:///{DATA_DIR / 'app.db'}"
+    # `.as_posix()`：URL 里出现 `\` 是自找麻烦；`make_url(...).database` 会原样回读。
+    database_url: str = f"sqlite+aiosqlite:///{DB_PATH.as_posix()}"
     log_level: str = "INFO"
     log_json: bool = True
     embedding_model_id: str | None = None  # 阶段五拍板（ROADMAP 待定项 1）

@@ -227,3 +227,108 @@ def test_structlog_configured_only_in_logging_module() -> None:
     assert offenders == {"src/pyassist/logging.py"}, (
         f"structlog.configure 应只在 logging.py 调用，实际：{sorted(offenders)}"
     )
+
+
+# ---------- 阶段三追加（SPEC §4.10）----------
+CHECKPOINTER_PATH = REPO_ROOT / "src" / "pyassist" / "agent" / "checkpointer.py"
+STORE_PATH = REPO_ROOT / "src" / "pyassist" / "agent" / "store.py"
+SESSION_PATH = REPO_ROOT / "src" / "pyassist" / "db" / "session.py"
+REPOSITORIES_PATH = REPO_ROOT / "src" / "pyassist" / "db" / "repositories.py"
+
+CHECKPOINT_MODULE_PREFIX = "langgraph.checkpoint"
+STORE_MODULE_PREFIX = "langgraph.store"
+CHECKPOINT_CLASS_NAMES = frozenset(
+    {"SqliteSaver", "AsyncSqliteSaver", "PostgresSaver", "AsyncPostgresSaver"}
+)
+STORE_CLASS_NAMES = frozenset(
+    {"SqliteStore", "AsyncSqliteStore", "PostgresStore", "AsyncPostgresStore"}
+)
+ENGINE_FACTORY_NAMES = frozenset({"create_engine", "create_async_engine"})
+
+
+def _call_name(node: ast.Call) -> str | None:
+    """`f(...)` 与 `a.b.f(...)` 都取出末段名，其余返回 None。"""
+    func = node.func
+    if isinstance(func, ast.Name):
+        return func.id
+    return getattr(func, "attr", None)
+
+
+def test_checkpointer_classes_only_in_checkpointer_module() -> None:
+    """§2：检查点类（同步/异步）只在 agent/checkpointer.py 被引用。
+
+    匹配 `from langgraph.checkpoint... import ...` 与 `...Saver(...)` 构造两类。
+    """
+    offenders: set[str] = set()
+    for path, module in _python_sources():
+        if path == CHECKPOINTER_PATH:
+            continue
+        for node in ast.walk(module):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                CHECKPOINT_MODULE_PREFIX
+            ):
+                offenders.add(_tree_relative(path))
+            if isinstance(node, ast.Call) and _call_name(node) in CHECKPOINT_CLASS_NAMES:
+                offenders.add(_tree_relative(path))
+    assert not offenders, f"检查点类只允许在 agent/checkpointer.py 引用，违例：{sorted(offenders)}"
+
+
+def test_store_classes_only_in_store_module() -> None:
+    """§2：Store 类（同步/异步）只在 agent/store.py 被引用。"""
+    offenders: set[str] = set()
+    for path, module in _python_sources():
+        if path == STORE_PATH:
+            continue
+        for node in ast.walk(module):
+            if isinstance(node, ast.ImportFrom) and (node.module or "").startswith(
+                STORE_MODULE_PREFIX
+            ):
+                offenders.add(_tree_relative(path))
+            if isinstance(node, ast.Call) and _call_name(node) in STORE_CLASS_NAMES:
+                offenders.add(_tree_relative(path))
+    assert not offenders, f"Store 类只允许在 agent/store.py 引用，违例：{sorted(offenders)}"
+
+
+def test_engine_constructed_only_in_db_session() -> None:
+    """§2：引擎的唯一构造点是 db/session.py（业务路径）。
+
+    `migrations/env.py` 用同步引擎跑 DDL，不在 src/ 扫描面内，天然不受这条约束。
+    """
+    offenders: set[str] = set()
+    for path, module in _python_sources():
+        if path == SESSION_PATH:
+            continue
+        for node in ast.walk(module):
+            if isinstance(node, ast.Call) and _call_name(node) in ENGINE_FACTORY_NAMES:
+                offenders.add(_tree_relative(path))
+    assert not offenders, f"引擎只允许在 db/session.py 构造，违例：{sorted(offenders)}"
+
+
+def test_db_session_has_no_dialect_wording() -> None:
+    """§2 / SPEC §4.1：方言知识集中在 config.py，db/session.py 不得出现方言字样。
+
+    文本扫描（注释与 docstring 也算）—— 这正是"把方言知识挪去 config.py"的可执行形式。
+    """
+    text = _read_text(SESSION_PATH)
+    assert text is not None, "db/session.py 应存在"
+    assert "sqlite" not in text.lower(), "db/session.py 不得出现方言字样（含注释）"
+
+
+def test_raw_sql_only_in_repositories() -> None:
+    """§2：裸 SQL 只在 db/repositories.py（`migrations/` 是 DDL，不在扫描面内）。
+
+    匹配 `text(...)` / `sqlalchemy.text(...)` / `....exec_driver_sql(...)` 三类 AST 调用。
+    """
+    offenders: set[str] = set()
+    for path, module in _python_sources():
+        if path == REPOSITORIES_PATH:
+            continue
+        for node in ast.walk(module):
+            if not isinstance(node, ast.Call):
+                continue
+            func = node.func
+            if _call_name(node) == "text" or (
+                isinstance(func, ast.Attribute) and func.attr == "exec_driver_sql"
+            ):
+                offenders.add(_tree_relative(path))
+    assert not offenders, f"裸 SQL 只允许在 db/repositories.py 出现，违例：{sorted(offenders)}"

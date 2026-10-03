@@ -1,13 +1,13 @@
-# SPEC.md — 阶段二 · LLM 基座与 `reasoning_content` 修复 · 实施规格
+# SPEC.md — 阶段三 · 持久化与状态双源 · 实施规格
 
-本文件是 **ROADMAP.md「阶段二」的施工细则**，回答"这一阶段怎么建、建成什么样才算完"。
+本文件是 **ROADMAP.md「阶段三」的施工细则**，回答"这一阶段怎么建、建成什么样才算完"。
 
 - `AGENTS.md` 是**契约**（不可协商）。本文件不重新定义契约，只把它翻译成可执行的任务。
-- `ROADMAP.md` 是**施工顺序**。本文件的每个任务都能追到 ROADMAP「阶段二」的某条产出。
+- `ROADMAP.md` 是**施工顺序**。本文件的每个任务都能追到 ROADMAP「阶段三」的某条产出。
 - 三者冲突时以 `AGENTS.md` 为准；本文件与 `AGENTS.md` 冲突，说明本文件写错了。
-- 阶段一的规格已归档到 `docs/specs/阶段一-工程底座.md`（见「待定项 1」）。
+- 阶段一、阶段二的规格已归档到 `docs/specs/阶段一-工程底座.md`、`docs/specs/阶段二-LLM基座.md`。
 
-**阶段二不交付版本，交付"任何图都能安全地取模型"的地基。** 验收标准是补丁经得起"连续两轮工具调用"，不是单轮问答能跑通 —— 单轮问答在本阶段**测不出任何问题**。
+**阶段三不交付版本，交付"对话历史只有一个家"的边界。** 验收标准是**程序化**的：不是"我们约定检查点指向 `data/app.db`"，而是开一条真实连接、问数据库自己"你是哪个文件"。
 
 ---
 
@@ -15,125 +15,159 @@
 
 ### 做
 
-- `llm/deepseek_chat.py`：`ChatDeepSeekPatched`，两块补丁（`reasoning_content` 出站回写 + 缓存命中用量归一化）。
-- `llm/client.py`：唯一模型实例工厂 + 启动时模型名校验 + `--check-models` CLI。
-- `llm/tracing.py`：唯一 Token/成本记账（命中与未命中分别计价、错峰半价）。
-- `llm/prompts/qa.jinja2` + 加载器。
-- 四个测试文件 + 一条守护断言扩展。
+- `config.py`：新增 `DB_PATH` 与三个 URL 派生函数（`build_engine_kwargs` / `resolve_sqlite_path` / `to_psycopg_conninfo`）；`settings.database_url` 默认值切到异步驱动。
+- `db/session.py`：引擎、Session 工厂、Session 依赖；**零方言字样**。
+- `db/models.py`：五张业务表（`users` / `sessions` / `exercise_attempts` / `mistakes` / `token_ledger`），**没有 `messages` 表**。
+- `db/repositories.py`：★ 唯一 SQL 出口，含幂等写（去重键）。
+- `agent/checkpointer.py`：★ 唯一检查点构造点（`AsyncSqliteSaver` / `AsyncPostgresSaver`）。
+- `agent/store.py`：★ 唯一长期记忆 Store 构造点（`AsyncSqliteStore` / `AsyncPostgresStore`）。
+- `alembic.ini` + `migrations/`：建业务表；LangGraph 的地表由迁移**流程**（`env.py`）建一次。
+- `tests/test_state_ownership.py`、`tests/test_idempotency.py`，以及 `tests/test_contract_guardrails.py` 的守护断言扩展。
 
 ### 不做（明确排除，避免"顺手加一下"）
 
 | 不建 | 理由 |
 |---|---|
-| `src/pyassist/errors.py` | 阶段四的单点所有权（§3.2 异常树）。本阶段缺 key 时抛 `RuntimeError`，阶段四统一换成 `ConfigError`，**不留 TODO 占位**（见「待定项 2」） |
-| `agent/state.py` / `agent/registry.py` / 任何图 | 阶段六。阶段二只保证"图一旦开建，取模型这一步已经是对的" |
-| `api/schemas.py` / `api/errors.py` / `/health` 路由 | 阶段四。本阶段只把模型校验**结果**存在 `client.py` 的模块级变量里，供阶段四读 |
-| `db/` 任何文件、`token_ledger` 表 | 阶段三。Token 账本的**持久化**是阶段三，本阶段只做**计价**（§3.1 的 `cost_usd`） |
-| `rag/`、`sandbox/` | 阶段五、阶段七 |
-| `diagnose.jinja2` / `exercise.jinja2` / `grade.jinja2` | 阶段七、八。本阶段只建 `qa.jinja2` 与**加载器**，把"怎么写模板"这件事定型 |
-| 单日 Token 熔断逻辑 | 阶段八（§5.5）。本阶段只出 `UsageSnapshot`，不做累计与熔断 |
-| 实例缓存 / 连接池调优 | 本阶段没有热路径，每次 `get_chat_model()` 造一个新的 pydantic 对象开销可忽略。等阶段六出现"每请求多次取模型"时再加缓存，且要说明理由 |
+| `agent/state.py` / `agent/registry.py` / `agent/graphs/*` | 阶段六。本阶段只保证"图一旦开建，落库这一步已经是对的"。`test_idempotency.py` 里的图是**测试夹具**，不在 `src/` |
+| `api/*`（含 `/health`、`api/deps.py`） | 阶段四。本阶段的构造点是 `@asynccontextmanager`，阶段四的 `lifespan` 进来即可 |
+| `services/*` | 阶段四起。本阶段只出仓储与构造点 |
+| `errors.py` | 阶段四（§3.2 异常树）。本阶段参数错误抛 `ValueError`，阶段四统一换掉，**不留 TODO 占位** |
+| `rag/*` / `sandbox/*` | 阶段五、阶段七 |
+| 记忆抽取逻辑（"从对话里抽偏好"） | 阶段八的 `services/memory.py`。本阶段只建 Store 构造点 |
+| Token 累计与单日熔断 | 阶段八（§5.5）。本阶段只建 `token_ledger` 表与写函数，**不在任何请求路径调用** |
+| 任何 `src/` 下的图、`while` 工具循环 | §2 单点所有权：拼装图只有 `agent/graphs/*.py` 一个家，阶段六才有 |
+| **下载新依赖** | 见 §1.4：`aiosqlite` / `sqlite-vec` / `psycopg` 都已是直接依赖的硬 `Requires-Dist`，本阶段**不需要装任何新包**。是否把它们从"传递"提升为直接声明，见「待定项 9」 |
+| Postgres 真机验证 | 本机无 PG 实例。分支照写，验收明确排除（照阶段二 `--check-models` 的处理方式） |
+| `sentence-transformers` / 向量索引配置 | 向量模型选型是阶段五的待定项 1。本阶段 Store 的 `index=None` |
 
 ---
 
-## 1. 前置核查结果（本机实测，2026-10-03）
+## 1. 前置核查结果（本机实测 / 读 `.venv` 源码，2026-10-03）
 
 ### 1.1 已装版本
 
-| 包 | 版本 | 影响 |
+| 包 | 版本 | 对本阶段的意义 |
 |---|---|---|
-| `langchain-deepseek` | **1.1.0** | 补丁的**靶子**。缺陷 A、B 都在这个版本上实测确认 |
-| `langchain-openai` | **1.1.9** | 缺陷 A、B 的**上游根源**都在这里 |
-| `langchain-core` | 1.6.6 | `UsageMetadata` / `InputTokenDetails` 定义在 `langchain_core/messages/ai.py`，并从 `langchain_core.messages` 再导出 |
-| `langgraph` | 1.1.10 | 阶段六才用，本阶段不依赖 |
-| `openai` | 1.109.1 | 仅 `client.py` 的 `models.list()` 用（§1 / §2） |
-| `respx` | 0.23.1 | 已在 `[dependency-groups].dev` 里，本阶段三个测试都靠它保持离线 |
-| `jinja2` | 已装 | `ChatPromptTemplate` 的 `template_format="jinja2"` 需要它 |
+| `langgraph` | **1.1.10** | 检查点与 Store 的基座；`StateGraph` / `RetryPolicy` / `compile(checkpointer=..., store=...)` |
+| `langgraph-checkpoint-sqlite` | **2.0.11** | `AsyncSqliteSaver` 的提供者；**也是 `aiosqlite` 与 `sqlite-vec` 的声明者** |
+| `langgraph-checkpoint-postgres` | **2.0.25** | `AsyncPostgresSaver`；声明 `psycopg>=3.2.0` / `psycopg-pool>=3.2.0` |
+| `sqlalchemy` | **2.1.3** | 2.0 风格（`select()` / `Mapped` / `DeclarativeBase`） |
+| `alembic` | **1.20.0** | 迁移 |
+| `aiosqlite` | 0.22.1 | 异步 SQLite 驱动（**已装，但 pyproject 未声明**，见 §1.4） |
+| `sqlite_vec` | 0.1.9 | `langgraph.store.sqlite.base` 的**模块级硬导入**（见 §1.3） |
+| `psycopg` / `psycopg_pool` | 3.3.6 / 3.3.3 | 生产分支 |
 
-### 1.2 缺陷 A：`reasoning_content` 只入不出（必须自修）
+### 1.2 异步类的 API 约束（本阶段的技术地基）
 
-直接读 `.venv` 里的源码，不凭记忆：
+直接读 `.venv` 源码，不凭记忆：
 
-| 事实 | 位置 |
-|---|---|
-| 入站**有**：非流式把响应里的 `reasoning_content` 写进 `AIMessage.additional_kwargs` | `langchain_deepseek/chat_models.py:315-327` |
-| 入站**有**：流式同一字段写进 `AIMessageChunk.additional_kwargs` | `langchain_deepseek/chat_models.py:342-359` |
-| 出站**完全没有**：`_get_request_payload` 只修 `tool` 的 list content 与 assistant 的 list content，**不碰** `reasoning_content` | `langchain_deepseek/chat_models.py:264-297` |
-| 出站**完全没有**：`_convert_message_to_dict` 的 `AIMessage` 分支只处理 `tool_calls` / `function_call` / `audio`，**不读** `additional_kwargs["reasoning_content"]` | `langchain_openai/chat_models/base.py:289-366` |
-
-**结论：社区 PR #37461（出站镜像）与 #35093（`tool_calls` 场景回填 `""`）在这个版本上都没有合入。** 补丁是必需的，不是空壳。将来升级依赖后，本文件的测试会告诉你上游是否已修 —— 修了则 `deepseek_chat.py` 可退化为薄壳，**但测试必须留着**（§1.4：它是防回归的唯一保险）。
-
-两个由此推出的实现约束：
-
-1. `_convert_message_to_dict` 是 `langchain_openai` 的**模块级函数**，不是方法，**子类无法 override 它**。只能在 `_get_request_payload` 里对 payload **后处理**。
-2. `_get_request_payload` 里 `payload["messages"]` 与 `self._convert_input(input_).to_messages()` **一一对应、顺序一致**（同一个列表推导，见 `langchain_openai/chat_models/base.py:1472-1477`），所以可以用 `zip(..., strict=True)` 把「原始消息」与「出站 dict」对齐。对齐失败时（长度不符）**宁可不动手**。
-
-### 1.3 缺陷 B：缓存命中的输入 token 会被算成全价（ROADMAP / AGENTS 均未记载）
-
-| 事实 | 位置 |
-|---|---|
-| `langchain_openai` 取缓存命中数只认 OpenAI 的**嵌套**形状 `prompt_tokens_details.cached_tokens` | `langchain_openai/chat_models/base.py:3723-3739` |
-| DeepSeek 返回的是**扁平**的 `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`，没有 `prompt_tokens_details` 这个对象 | DeepSeek 官方 Context Caching 文档 |
-| 未加工的原始 usage dict 仍然拿得到：`llm_output["token_usage"]` | `langchain_openai/chat_models/base.py:1508, 1527-1528` |
-| `InputTokenDetails` 的正确键名是 `cache_read` | `langchain_core/messages/ai.py:38-72` |
-
-**后果**：`usage_metadata.input_token_details` 里**根本没有 `cache_read`**，于是 §3.1 要求的 `usage.cached_tokens` 恒为空，每一次缓存命中都按全价 miss 计费 —— 而 §1 说命中与未命中的**输入价差可达 50 倍**。这不是"精度问题"，是成本报表从上线第一天起就是错的。
-
-**归入本阶段**：归一化落在 `deepseek_chat.py`（与缺陷 A 同一个类、同一个"修上游集成"的理由）；`tracing.py` 只消费 `usage_metadata`，**不读 `response_metadata["token_usage"]` 兜底** —— 两条取数路径会互相矛盾。理由与备选见「待定项 4」。
-
-### 1.4 阶段一留下的闸门（本阶段必须对齐）
-
-| 闸门 | 位置 | 对阶段二的约束 |
+| 事实 | 位置 | 对本阶段的约束 |
 |---|---|---|
-| `ChatDeepSeek(` / `ChatOpenAI(` 只许在 `llm/client.py`（**精确路径**，断言是集合相等） | `tests/test_contract_guardrails.py:163-176` | 本阶段把 `ChatDeepSeekPatched` 也加进去（T7）。注意：**类定义**不是 `ast.Call`，所以 `deepseek_chat.py` 里的 `class ChatDeepSeekPatched(ChatDeepSeek)` 不会误伤 |
-| `BaseSettings` 子类只在 `config.py` | 同上 `:191-204` | 本阶段不得新增 settings |
-| `structlog.configure` 只在 `logging.py` | 同上 `:207-224` | 本阶段只用 `logging.get_logger()` |
-| `tests/` 在扫描面内 | 同上 `SCAN_DIRS` | **测试文件的注释与字符串里也不得出现已停用模型名** |
+| `langgraph.checkpoint.sqlite.SqliteSaver` **只支持同步**；调异步方法抛 `_AIO_ERROR_MSG` | `langgraph/checkpoint/sqlite/__init__.py:23` | ROADMAP 写的"`SqliteSaver`"必须落到 `AsyncSqliteSaver`（见 §5「与 ROADMAP 验收的差异」第 1 条） |
+| `AsyncSqliteSaver.__init__` 与 `AsyncSqliteStore.__init__` **都调 `asyncio.get_running_loop()`** | `checkpoint/sqlite/aio.py:118`、`store/sqlite/aio.py:105` | **不能**在 import 期造模块级单例 —— 只能在**运行中的事件循环内**构造。这是 `open_checkpointer()` 必须写成 `@asynccontextmanager` 的**硬原因**，不是风格偏好 |
+| 四个异步类的 `from_conn_string` 都是 `@asynccontextmanager`：`AsyncSqliteSaver.from_conn_string(conn_string)`；`AsyncSqliteStore.from_conn_string(conn_string, *, index=None, ttl=None)`；`AsyncPostgresSaver.from_conn_string(conn_string, *, pipeline=False, serde=None)` | 同目录 `aio.py` | 构造点的形状已定，照抄 |
+| `setup()` **幂等**（`is_setup` 标志 + `CREATE TABLE IF NOT EXISTS`）。`AsyncSqliteSaver.setup()` 内含 `PRAGMA journal_mode=WAL` 并建 `checkpoints` / `writes` | `checkpoint/sqlite/aio.py:273-313` | 迁移里跑一次 + 运行时懒调用**不会撞表**，不必去重 |
+| `AsyncPostgresSaver.setup()` 的 docstring 明确要求"首次由用户直接调用" | `checkpoint/postgres/aio.py:82` | 生产分支必须**保证迁移跑过**，不能指望懒调用 |
+| `AsyncSqliteStore` 的 `index=None` 时 `self.embeddings = None`，不建向量表 | `store/sqlite/aio.py:89-116` | 本阶段用 `index=None`，向量检索留给阶段八 |
 
-`config.py` 已备好本阶段所需的全部常量，不需要改动：`MODEL_FLASH` / `MODEL_PRO` / `EXPECTED_MODEL_IDS`、`PRICE_TABLE`（六字段 `PriceTier`，峰值/非峰值两列）、`PEAK_WINDOWS_UTC`、`Settings.deepseek_api_key`（注释已预告"阶段二 `llm/client.py` 取模型时才报错"）。
+### 1.3 `langgraph.store.sqlite` 硬依赖 `sqlite_vec`（易踩）
 
-### 1.5 两段核心草案已实测
+`langgraph/store/sqlite/base.py:15` 是**无条件**的模块级 `import sqlite_vec`（带 `# type: ignore[import-untyped]`）。
 
-§4.1 的 payload 后处理与 §4.4 的加载器，已在**当前 `.venv` 上跑通过一次**（一次性脚本，未入库）：
+**后果**：`from langgraph.store.sqlite.aio import AsyncSqliteStore` 在 import 期就要求 `sqlite_vec` 已安装 —— 与是否启用向量检索无关。`sqlite_vec` 0.1.9 已装，且由 `langgraph-checkpoint-sqlite` 的 `Requires-Dist` 声明（见 §1.4）。**本阶段不新增依赖，但要知道这条耦合**：将来若移除 `langgraph-checkpoint-sqlite`，`agent/store.py` 的 import 会先炸。
 
-- `ChatPromptTemplate.from_messages([("system", 模板), MessagesPlaceholder("history")], template_format="jinja2")` 可以共存并渲染；同输入两次渲染**逐字节一致**。
-- `_convert_input(input_).to_messages()` 与 `_get_request_payload` 的 `payload["messages"]` **长度与顺序一致**（用一个 `assert` 验过），`zip(..., strict=True)` 对齐成立。
-- 镜像函数写出的是出站 dict 的**顶层键**；带 `tool_calls` 而字段缺失时回填 `""`，**键存在**。
+### 1.4 依赖声明：本阶段不需要装新包（已逐个核实）
 
-也就是说本文件的代码草案不是"看起来对"，而是已经跑过一遍的。实施时若这三点之一不成立，说明 `.venv` 里的包被换过版本 —— 先回到 §1.1 核对版本。
+逐个查过 dist metadata，以下都是**直接依赖的硬 `Requires-Dist`**，不是"碰巧装上的"：
+
+| 包 | 由谁保证 | 用途 |
+|---|---|---|
+| `aiosqlite>=0.20` | `langgraph-checkpoint-sqlite` 2.0.11 | `AsyncSqliteSaver` / `AsyncSqliteStore` |
+| `sqlite-vec>=0.1.6` | `langgraph-checkpoint-sqlite` 2.0.11 | `langgraph.store.sqlite.base` 的模块级导入（§1.3） |
+| `psycopg>=3.2.0` / `psycopg-pool>=3.2.0` | `langgraph-checkpoint-postgres` 2.0.25 | 生产分支 |
+
+~~因此 **本阶段不需要下载任何新包，`uv.lock` 不变**。~~
+
+**实施期实测更正（2026-10-03，施工中推翻上述结论）**：上面这条只对"**这三个包本身**"成立，
+对它们的 **extra** 不成立。实际 `uv sync` 新增了两个锁条目，且都是硬需求：
+
+| 新增包 | 由谁带来 | 为什么躲不掉 |
+|---|---|---|
+| `greenlet>=3.5.6` | `sqlalchemy[asyncio]` 的 extra | `sqlalchemy.ext.asyncio` 在 import 期即要求 greenlet；**没有它 `db/session.py` 直接 ImportError**，本阶段一行都跑不了。原 §1.4 只查了 `Requires-Dist` 的裸依赖，漏了 extra。 |
+| `psycopg-binary==3.3.6` | 待定项 9 自己推荐的 `psycopg[binary,pool]` 的 `[binary]` extra | 提供捆绑 libpq（Windows 上用）。原 §1.4 说"psycopg 已在锁里"——那指的是 `psycopg` / `psycopg-pool`，`[binary]` 是额外的一个分发。 |
+
+另外发现一处**上游版本不兼容**（本阶段实际踩到，见「待定项 9」）：
+`aiosqlite>=0.22` 起不再继承 `threading.Thread`，`Connection.is_alive()` 随之消失，
+而 `langgraph-checkpoint-sqlite` 2.0.11 的 `AsyncSqliteSaver.setup()` 仍在调它 ——
+`graph.ainvoke` 首次懒 setup 即 `AttributeError`。故 `aiosqlite` 必须钉 `>=0.20,<0.22`。
+
+不过"装得上"与"该不该声明"是两件事：`db/session.py` 的 `sqlite+aiosqlite` 方言、
+`agent/store.py` 经 `langgraph.store.sqlite` 对 `sqlite-vec` 的硬依赖、以及生产分支对
+`psycopg` 的直接使用，都是**我们自己的代码直接依赖**的东西，只是此刻由别人替我们声明。
+上游哪天换实现，我们不会得到依赖解析错误，只会静默崩。是否把它们从"传递"提升为
+`[project].dependencies` 里的直接声明 —— 见「待定项 9」。生产想提速可换 `psycopg[binary]`，属阶段八部署话题。
+
+### 1.5 阶段二留下的闸门与缝（本阶段必须对齐）
+
+| 闸门 / 缝 | 位置 | 对阶段三的约束 |
+|---|---|---|
+| `ChatDeepSeek(` / `ChatDeepSeekPatched(` 只许在 `llm/client.py`（**集合相等**断言） | `tests/test_contract_guardrails.py:164-181` | 本阶段追加同类断言（§4.10 / T7），沿用该文件的写法 |
+| `MemorySaver` 不得出现在 `src/` | 同上 `:184-193` | **已有**，本阶段不改；`test_state_ownership.py` 再从"import 不到"角度补一刀 |
+| `BaseSettings` 子类只在 `config.py` | 同上 `:196-209` | 本阶段不得新增 settings |
+| `structlog.configure` 只在 `logging.py` | 同上 `:212-229` | 本阶段只用 `logging.get_logger()` |
+| `UsageSnapshot` 字段名 = §3.1 信封 `meta.usage` 字段名 | `llm/tracing.py` | `token_ledger` 的列名**照抄这套字段名**，接上阶段二的缝，不另起名 |
+| `config.DATA_DIR` / `REPO_ROOT` | `config.py:19-20` | `DB_PATH` 由 `DATA_DIR` 派生，不新增第二个"数据目录"概念 |
+| `settings.database_url` 默认是**绝对路径** | `config.py:96` | 保留绝对路径；只把驱动从 `pysqlite` 换成 `aiosqlite` |
+| `tests/test_smoke.py` 断言 `database_url.startswith("sqlite")` | `tests/test_smoke.py:24` | `sqlite+aiosqlite:///...` **仍然通过**，无需改 |
+
+### 1.6 `RetryPolicy` 的三个坑（写测试必需，已实测源码）
+
+| 坑 | 事实 | 后果 |
+|---|---|---|
+| 默认不重试 `RuntimeError` | `RetryPolicy.retry_on` 默认 `default_retry_on`，而它对 `RuntimeError` / `ValueError` / `OSError` 等返回 **`False`** | **必须显式传 `retry_on=RuntimeError`**，否则节点不会被重跑，"幂等测试"变成空转 |
+| 默认会真的 sleep | `initial_interval=0.5`、`backoff_factor=2.0`、`jitter=True` | 测试里传 `initial_interval=0.0, jitter=False` |
+| `add_node(..., retry_policy=)` 存在 | `langgraph/graph/state.py:300`；`RetryPolicy` 是 `NamedTuple`（`langgraph/types.py:404`） | 形状确定，照抄 |
 
 ---
 
 ## 2. 目标文件清单
 
-`✓` = 阶段二新建；`△` = 阶段二修改；其余为既有文件。
+`✓` = 阶段三新建；`△` = 阶段三修改；其余为既有文件。
 
 ```
 python助手/
-├── AGENTS.md / ROADMAP.md               （既有，只读）
-├── SPEC.md                          △    本文件（阶段一规格已归档）
-├── docs/specs/阶段一-工程底座.md   ✓    阶段一规格归档
+├── AGENTS.md / ROADMAP.md                       （既有，只读）
+├── SPEC.md                                  △    本文件（阶段二规格已归档）
+├── alembic.ini                              ✓    迁移入口（URL 留空，由 env.py 读 config）
+├── pyproject.toml                           △?   默认不改（§1.4）；是否提升三个依赖见「待定项 9」
+├── .env.example                             △    DATABASE_URL 换异步驱动
+├── docker-compose.yml                       △    DATABASE_URL 默认值同上
+├── docs/specs/
+│   ├── 阶段一-工程底座.md                       （既有，归档件）
+│   └── 阶段二-LLM基座.md                    ✓    阶段二规格归档
+├── migrations/
+│   ├── env.py                               ✓    同步引擎 + 迁移后建 LangGraph 表
+│   ├── script.py.mako                       ✓    后续 `alembic revision` 需要
+│   └── versions/0001_init.py                ✓    手写：五张业务表
 ├── src/pyassist/
-│   ├── config.py                        （既有，本阶段不改）
-│   ├── logging.py                       （既有，本阶段只调用）
-│   └── llm/
-│       ├── __init__.py                  （既有，保持空）
-│       ├── deepseek_chat.py         ✓    ★ ChatDeepSeekPatched（两块补丁）
-│       ├── client.py                ✓    ★ 唯一模型实例工厂 + 模型名校验 + CLI
-│       ├── tracing.py               ✓    ★ 唯一 Token/成本记账
-│       └── prompts/
-│           ├── __init__.py          ✓    加载器（有意破例，见 §4 T6）
-│           └── qa.jinja2            ✓    v1 问答系统提示
+│   ├── config.py                            △    +DB_PATH +三个 URL 派生函数 +异步驱动
+│   ├── logging.py                                 （既有，本阶段只调用）
+│   ├── db/
+│   │   ├── __init__.py                            （既有，保持空）
+│   │   ├── session.py                       ✓    引擎 / Session 工厂 / 依赖
+│   │   ├── models.py                        ✓    五张业务表，无 messages
+│   │   └── repositories.py                  ✓    ★ 唯一 SQL 出口
+│   └── agent/
+│       ├── __init__.py                            （既有，保持空）
+│       ├── checkpointer.py                  ✓    ★ 唯一检查点构造点
+│       └── store.py                         ✓    ★ 唯一 Store 构造点
 └── tests/
-    ├── test_smoke.py                    （既有）
-    ├── test_contract_guardrails.py  △    追加 ChatDeepSeekPatched 唯一构造点
-    ├── test_deepseek_reasoning.py   ✓    ★ 三条（含强制的连续两轮回归）
-    ├── test_prompt_stability.py     ✓    逐字节稳定 + 易变 token 扫描
-    ├── test_tracing.py              ✓    分别计价 / 错峰边界
-    └── test_usage_mapping.py        ✓    扁平 cache 字段 → cache_read
+    ├── test_contract_guardrails.py          △    追加五条单点所有权断言
+    ├── test_state_ownership.py              ✓    ★ 边界守护（程序化）
+    └── test_idempotency.py                  ✓    ★ 节点幂等守护
 ```
 
-`llm/__init__.py` **保持为空** —— 全项目用绝对导入（`from pyassist.llm.client import ...`），不需要 re-export。`llm/prompts/__init__.py` 是唯一破例，理由见 T6。
+`db/session.py` 与 `agent/*.py` 的公开面各自只有几个函数，**不留任何空函数或 TODO 占位** —— 那是平行实现的种子（§0）。
 
 ---
 
@@ -141,853 +175,1042 @@ python助手/
 
 | # | 任务 | 产出 | 预估 |
 |---|---|---|---|
-| T0 | 归档阶段一规格 | `docs/specs/阶段一-工程底座.md` | 10 min |
-| T1 | 补丁类 | `llm/deepseek_chat.py` | 60 min |
-| T2 | 三条离线回归测试 | `tests/test_deepseek_reasoning.py` | 60 min |
-| T3 | 唯一工厂 + 模型名校验 + CLI | `llm/client.py` | 60 min |
-| T4 | 记账模块 | `llm/tracing.py` | 50 min |
-| T5 | 记账与用量映射测试 | `tests/test_tracing.py`、`tests/test_usage_mapping.py` | 45 min |
-| T6 | Prompt 模板 + 加载器 + 稳定性测试 | `llm/prompts/`、`tests/test_prompt_stability.py` | 40 min |
-| T7 | 扩展契约守护 | `tests/test_contract_guardrails.py` | 15 min |
-| T8 | 五条验收命令 + 真机 `--check-models` + 提交 | 绿的阶段二 | 30 min |
+| T0 | 归档阶段二规格 | `docs/specs/阶段二-LLM基座.md` | 10 min |
+| T1 | 路径与方言知识的单一落点 | `config.py`、`.env.example`、`docker-compose.yml` | 25 min |
+| T2 | 引擎与 Session | `db/session.py` | 30 min |
+| T3 | 五张业务表 | `db/models.py` | 45 min |
+| T4 | 唯一 SQL 出口 + 去重键 | `db/repositories.py` | 50 min |
+| T5 | 检查点与 Store 构造点 | `agent/checkpointer.py`、`agent/store.py` | 60 min |
+| T6 | 迁移 | `alembic.ini`、`migrations/env.py`、`migrations/script.py.mako`、`migrations/versions/0001_init.py` | 60 min |
+| T7 | 两个守护测试 + 守护断言扩展 | `tests/test_state_ownership.py`、`tests/test_idempotency.py`、`tests/test_contract_guardrails.py` | 75 min |
+| T8 | 验收五连 + `alembic upgrade head` / `alembic check` + 提交 | 绿的阶段三 | 30 min |
 
-**合计约 4–5 小时。** 无硬阻塞项。
+**合计约 6 小时。** 无硬阻塞项；Postgres 分支不可验（§5）。
 
-### T0 · 归档阶段一规格
+### T0 · 归档阶段二规格
 
 ```bash
-mkdir -p docs/specs
-cp SPEC.md "docs/specs/阶段一-工程底座.md"     # 本文件随即被重写
+cp SPEC.md "docs/specs/阶段二-LLM基座.md"     # 本文件随即被重写
 ```
 
-阶段一规格里有 4 处被代码反向引用（`config.py` 的"§4 T4"、"待定项 4"，`pyproject.toml` 的"§5.6"、"§5.1 的疏漏"）。归档保留它们，归档件就是那些引用的解析目标。
+与阶段二 SPEC 的 T0 同一做法。归档件保留原标题（`阶段一` 的归档件也是这么处理），因此**不要**在归档件里改标题。
 
-### T1 · `llm/deepseek_chat.py`
+### T1 · `config.py` 增量
 
-见 §4.1。两块补丁写在一个类里，**两个纯函数放在模块级**（便于测试直接调，也便于 `mypy --strict` 收窄类型）。
+见 §4.1。三件事：`DB_PATH`、三个纯派生函数、异步驱动。
 
-顺序要求：先写缺陷 A 的镜像函数与 `_get_request_payload`，跑通 T2 的前两条测试，再补缺陷 B 的部分。**不要两处同时调** —— 这正是 §4 警告的"最容易踩且最难排查"的处境。
+**为什么要新增函数**：`db/session.py` 被 ROADMAP 要求"不得出现方言分支"。把**方言知识**（SQLite 需要 `busy_timeout`、SQLite 的文件路径怎么取、PG 的 conninfo 怎么拼）集中到 `config.py` 这个唯一配置入口，`db/session.py` 就只剩装配 —— 那条要求从"靠自觉"变成"可机器断言"（T7 的守护断言）。取舍见「待定项 2」。
 
-### T2 · `tests/test_deepseek_reasoning.py`
+`.env.example` 与 `docker-compose.yml` 的 `DATABASE_URL` 同步改（顺带把 `docker-compose.yml` 里的相对路径口径统一为与 config 一致的写法）。
 
-见 §4.5。三条测试**全离线**：前两条直接构造消息调 `_get_request_payload`（不发请求），第三条用 `respx` mock 两轮。
+### T2 · `db/session.py`
 
-**模型实例必须经 `llm/client.py` 取**，测试里不得自己 `ChatDeepSeekPatched(...)` —— 那会变成事实上的第二个所有者（阶段一 SPEC §2 的同一理由）。`get_chat_model(api_key=...)` 就是为此留的缝。
+见 §4.2。`create_engine` / `create_session_factory` / `open_session`。
 
-### T3 · `llm/client.py`
+**不做模块级引擎单例**：单例在测试里要额外重置，而阶段四的 `lifespan` 本来就会持有引擎。需要长生命周期时由调用方持有（阶段四），本阶段不提前发明生命周期管理。
 
-见 §4.2。三件事：唯一工厂、启动校验、CLI。
+### T3 · `db/models.py`
 
-`test_no_direct_llm_construction_outside_client` 断言的是**精确路径** `src/pyassist/llm/client.py`，所以文件名与位置不能动。
+见 §4.3。五张表，**没有 `messages`**。
 
-### T4 · `llm/tracing.py`
+### T4 · `db/repositories.py`
 
-见 §4.3。只做计价与快照，**不做累计**（那是阶段三的 `token_ledger` 表与阶段八的熔断）。
+见 §4.4。★ 唯一 SQL 出口。**幂等的权威是 `UNIQUE` 约束，不是应用层的 `if`**。
 
-### T5 · `tests/test_tracing.py` + `tests/test_usage_mapping.py`
+### T5 · `agent/checkpointer.py` + `agent/store.py`
 
-见 §4.7。前者覆盖计价与错峰边界，后者覆盖缺陷 B 的修好与否 —— 它是升级 `langchain-deepseek` 后**第一个**该跑的测试。
+见 §4.5 / §4.6。两个 `@asynccontextmanager` + 两个 `setup_*`。
 
-### T6 · `llm/prompts/`
+**`open_*` 不调 `setup()`**：§2 明确"不要在请求路径里调"。SQLite 侧上游会懒调用（幂等无害），PG 侧由迁移（T6）保证。
 
-见 §4.4。**`llm/prompts/__init__.py` 里写加载器是对阶段一约定的有意破例**：阶段一说"所有 `__init__.py` 保持为空"，那条针对的是**占位包**（空文件不发散）；`prompts` 不是占位包，它的公开面就是 `load_prompt()`。另开 `loader.py` 只会多一个文件，不多一层抽象。
+### T6 · 迁移
 
-### T7 · 扩展 `tests/test_contract_guardrails.py`
+见 §4.7。`env.py` 用**同步**引擎，LangGraph 的地表在**迁移事务提交之后**建。
 
-把 `"ChatDeepSeekPatched"` 加进 `FORBIDDEN_LLM_CONSTRUCTORS`（`:30`），并同步更新该测试的 docstring 与断言信息。**已经验证过不会误伤**：`deepseek_chat.py` 里的类定义是 `ast.ClassDef`，扫描只匹配 `ast.Call`。
+### T7 · 两个守护测试 + 守护断言
+
+见 §4.8 / §4.9 / §4.10。这是本阶段唯一有"判断逻辑"的产出。
 
 ### T8 · 验收
 
-跑 §5 的全部命令。真机那一条（`--check-models`）**不进 CI**，是人工步骤。
+跑 §5 的全部命令。`uv run pytest` 必须是**退出码 0**。`alembic upgrade head` 必须在**删掉 `data/app.db` 之后**也能从零跑通 —— 一次性的"在我机器上已经建过"不算通过。
 
 ---
 
 ## 4. 关键文件规格
 
-### 4.1 `src/pyassist/llm/deepseek_chat.py`
+### 4.1 `src/pyassist/config.py`（增量）
 
 ```python
-"""★ ChatDeepSeekPatched：修 `langchain-deepseek` 1.1.0 的两处缺陷（§1 / §2）。
+# ---------- 数据库 ----------
+# 唯一的库文件路径常量。检查点、业务表、Store 都指向它（§2）。
+DB_PATH: Final = DATA_DIR / "app.db"
 
-缺陷 A：`reasoning_content` 只入不出。
-    入站方向 ChatDeepSeek 会把响应里的 `reasoning_content` 存进
-    `AIMessage.additional_kwargs`；出站方向（`_get_request_payload` →
-    langchain_openai 的模块级 `_convert_message_to_dict`）完全不读这个字段，
-    于是被静默丢弃。思考模式下，一旦出现「模型 → tool_calls → ToolMessage →
-    再调模型」，第二轮请求缺 `reasoning_content`，DeepSeek 直接返回 400。
+# 同一路径的两种连接串：SQLAlchemy 用 URL，LangGraph 的 saver 用裸路径。
+# 二者都由 DB_PATH 派生，避免"两个路径常量早晚不一致"。
 
-缺陷 B：缓存命中的输入 token 会算成全价。
-    langchain_openai 的 `_create_usage_metadata` 只认 OpenAI 的嵌套形状
-    `prompt_tokens_details.cached_tokens`；DeepSeek 返回的是扁平的
-    `prompt_cache_hit_tokens` / `prompt_cache_miss_tokens`。不归一化，
-    §3.1 的 `usage.cached_tokens` 恒为空，成本报表严重偏高（价差可达 50 倍）。
+SQLITE_BUSY_TIMEOUT_SECONDS: Final = 30
+"""SQLite 连接级忙等上限。
 
-上游状态（2026-10-03 实测 1.1.0）：社区 PR #37461 / #35093 **均未合入**，
-两个补丁都必须自己写。升级依赖后先跑
-`tests/test_deepseek_reasoning.py` 与 `tests/test_usage_mapping.py`。
+同一个 `app.db` 会被**两条独立连接**写（SQLAlchemy 一条、检查点一条），
+没有它会立刻 `database is locked`。`journal_mode=WAL` 不在这里设 ——
+它是**库文件级持久属性**，由 `AsyncSqliteSaver.setup()` 设一次即全库生效。
 """
 
-from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
-from typing import Any
+def build_engine_kwargs(database_url: str) -> dict[str, Any]:
+    """按 URL 方言给出引擎参数。**全项目唯一按方言分流的地方。**
 
-from langchain_core.language_models import LanguageModelInput
-from langchain_core.messages import (
-    AIMessage,
-    AIMessageChunk,
-    BaseMessage,
-    InputTokenDetails,
-    UsageMetadata,
-)
-from langchain_core.outputs import ChatGenerationChunk, ChatResult
-from langchain_deepseek import ChatDeepSeek
-
-REASONING_CONTENT_KEY = "reasoning_content"
-CACHE_HIT_KEY = "prompt_cache_hit_tokens"
-EMPTY_REASONING = ""  # 带 tool_calls 却缺该字段时回填这个值，不能省略键
-
-
-def mirror_reasoning_content(messages: Sequence[BaseMessage], payload: dict[str, Any]) -> None:
-    """把入站存下的 `reasoning_content` 写回出站 assistant 消息（§1）。
-
-    带 `tool_calls` 而字段缺失时回填空串 —— **键必须存在，不能被省略**。
-    `payload["messages"]` 与传入的 `messages` 一一对应；长度不符时宁可不动手。
+    `db/session.py` 只做 `create_async_engine(url, **build_engine_kwargs(url))`，
+    因此它不含任何方言字样（T7 有守护断言）。这不是"业务逻辑进 config"，
+    而是"把配置本身读对"——三个函数都是 `settings.database_url` 的纯派生。
     """
-    outbound = payload.get("messages")
-    if not isinstance(outbound, list) or len(outbound) != len(messages):
-        return
-    for source, target in zip(messages, outbound, strict=True):
-        if not isinstance(source, AIMessage) or target.get("role") != "assistant":
-            continue
-        reasoning = source.additional_kwargs.get(REASONING_CONTENT_KEY)
-        if reasoning is None:
-            if "tool_calls" in target:
-                target[REASONING_CONTENT_KEY] = EMPTY_REASONING
-        else:
-            target[REASONING_CONTENT_KEY] = reasoning
+    backend = make_url(database_url).get_backend_name()
+    if backend == "sqlite":
+        return {"connect_args": {"timeout": SQLITE_BUSY_TIMEOUT_SECONDS}}
+    return {}
 
 
-def normalize_cache_usage(
-    message: AIMessage | AIMessageChunk,
-    raw_usage: Mapping[str, Any] | None,
-) -> None:
-    """把 DeepSeek 的扁平 `prompt_cache_hit_tokens` 归一到 `input_token_details["cache_read"]`。
+def resolve_sqlite_path(database_url: str) -> Path:
+    """取 SQLite 库文件的**文件系统路径**（`AsyncSqliteSaver` 要裸路径，不是 URL）。
 
-    只认上游原始 usage —— `usage_metadata` 里这个信息已经被 langchain_openai 丢掉了。
+    非 SQLite 后端直接报错：这个函数只在 SQLite 分支上被调用，
+    调用方（`agent/checkpointer.py` / `agent/store.py`）负责先判断后端。
     """
-    if not raw_usage:
-        return
-    cache_hit = raw_usage.get(CACHE_HIT_KEY)
-    if cache_hit is None:
-        return
-    usage = message.usage_metadata
-    if usage is None:
-        return
-    details: InputTokenDetails = dict(usage.get("input_token_details") or {})
-    details["cache_read"] = int(cache_hit)
-    message.usage_metadata = UsageMetadata(
-        input_tokens=usage["input_tokens"],
-        output_tokens=usage["output_tokens"],
-        total_tokens=usage["total_tokens"],
-        input_token_details=details,
-        output_token_details=usage.get("output_token_details") or {},
+    url = make_url(database_url)
+    if url.get_backend_name() != "sqlite":
+        raise ValueError(f"resolve_sqlite_path 只适用于 SQLite，当前是 {url.database!r}")
+    if not url.database:
+        raise ValueError("DATABASE_URL 里没有库路径")
+    return Path(url.database)
+
+
+def to_psycopg_conninfo(database_url: str) -> str:
+    """把 SQLAlchemy 的 PG URL 转成 psycopg 的 conninfo（生产分支用）。
+
+    两个构造点（检查点、Store）都要这一句，所以只能有一个家 —— 这里是唯一实现。
+    """
+    return make_url(database_url).set(drivername="postgresql").render_as_string(
+        hide_password=False
     )
+```
 
+`Settings` 只改一行：
 
-class ChatDeepSeekPatched(ChatDeepSeek):
-    """全项目唯一允许使用的模型类（§2）。**构造点只有 `llm/client.py`。**"""
-
-    def _get_request_payload(
-        self,
-        input_: LanguageModelInput,
-        *,
-        stop: list[str] | None = None,
-        **kwargs: Any,
-    ) -> dict[str, Any]:
-        payload = super()._get_request_payload(input_, stop=stop, **kwargs)
-        mirror_reasoning_content(self._convert_input(input_).to_messages(), payload)
-        return payload
-
-    def _create_chat_result(
-        self,
-        response: Any,
-        generation_info: dict[str, Any] | None = None,
-    ) -> ChatResult:
-        result = super()._create_chat_result(response, generation_info)
-        raw_usage = (result.llm_output or {}).get("token_usage")
-        for generation in result.generations:
-            normalize_cache_usage(generation.message, raw_usage)
-        return result
-
-    def _convert_chunk_to_generation_chunk(
-        self,
-        chunk: dict[str, Any],
-        default_chunk_class: type,
-        base_generation_info: dict[str, Any] | None,
-    ) -> ChatGenerationChunk | None:
-        generation = super()._convert_chunk_to_generation_chunk(
-            chunk, default_chunk_class, base_generation_info
-        )
-        if generation is not None:
-            normalize_cache_usage(generation.message, chunk.get("usage"))
-        return generation
+```python
+    database_url: str = f"sqlite+aiosqlite:///{DB_PATH.as_posix()}"
 ```
 
 三条要点：
 
-1. **`reasoning_content` 必须写成出站 dict 的顶层键**，不能塞进 `content` 的内容块里 —— 基类的 `_format_message_content` 会**静默剥掉** `type` 为 `thinking` / `reasoning_content` 的块。测试断言的就是顶层键。
-2. `_create_chat_result` 与 `_convert_chunk_to_generation_chunk` **都要 override**：前者管非流式，后者管流式。只修一个，阶段六的 SSE 路径会静默漏掉缓存命中。
-3. `response: Any` 是有意的 —— 精确类型是 `dict | openai.BaseModel`，引入 `openai` 的名字到本文件没有好处，而**放宽被覆写方法的形参类型**在 Liskov 意义上合法，`mypy --strict` 接受。
+1. **`.as_posix()`**：`sqlite+aiosqlite:///C:/.../data/app.db` 是 SQLAlchemy 在 Windows 上的规范写法；反斜杠虽然也能用，但 URL 里出现 `\` 是自找麻烦。`make_url(...).database` 会原样回读，`Path()` 再解析回来 —— 往返一致（`test_state_ownership.py` 断言的正是这条）。
+2. **`build_engine_kwargs` 用 `make_url` 而不是字符串 `startswith`**：URL 的方言段大小写与形态都可能变，交给 SQLAlchemy 解析。
+3. 三个函数是 `settings.database_url` 的**纯派生**，没有状态、没有 IO —— 这是它们能待在 `config.py` 而不算"业务逻辑"的理由。取舍见「待定项 2」。
 
-### 4.2 `src/pyassist/llm/client.py`
+### 4.2 `src/pyassist/db/session.py`
 
 ```python
-"""★ 唯一模型实例工厂（§2）。
+"""引擎与 Session（§2）。
 
-全项目取模型只走 `get_chat_model()`；任何其他模块自行 `ChatDeepSeek(...)` /
-`ChatOpenAI(...)` / `ChatDeepSeekPatched(...)` 都会被
-`tests/test_contract_guardrails.py` 拦下。
+**本文件不含任何方言字样。** 方言相关的连接参数由 `config.build_engine_kwargs()`
+以数据形式给出，本文件只装配 —— 于是"不得出现方言分支"从约定变成可断言的
+事实（`tests/test_contract_guardrails.py`）。
+
+引擎**不做模块级单例**：`create_async_engine` 本身是惰性的，但单例在测试里要
+额外重置；需要长生命周期时由调用方持有（阶段四的 FastAPI `lifespan`）。
 """
 
 from __future__ import annotations
 
-import argparse
-import sys
-from dataclasses import dataclass
-from datetime import UTC, datetime
-from typing import Any, Literal
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
 
-import openai
-from pydantic import SecretStr
-
-from pyassist.config import (
-    EXPECTED_MODEL_IDS,
-    MODEL_FLASH,
-    MODEL_PRO,
-    settings,
+from sqlalchemy.ext.asyncio import (
+    AsyncEngine,
+    AsyncSession,
+    async_sessionmaker,
+    create_async_engine,
 )
-from pyassist.llm.deepseek_chat import ChatDeepSeekPatched
-from pyassist.logging import get_logger
 
-logger = get_logger(__name__)
-
-ModelTier = Literal["flash", "pro"]
-
-_TIER_TO_MODEL_ID: dict[ModelTier, str] = {"flash": MODEL_FLASH, "pro": MODEL_PRO}
-_DEFAULT_REQUEST_TIMEOUT = 60.0
-_DEFAULT_MAX_RETRIES = 2  # 重试交给 SDK，不手写 for i in range(3)（§1）
+from pyassist.config import build_engine_kwargs, settings
 
 
-@dataclass(frozen=True, slots=True)
-class ModelCheckResult:
-    """启动时模型名校验的结果。阶段四把它接进 `/health`。"""
+def create_engine(database_url: str | None = None) -> AsyncEngine:
+    """建一个异步引擎。不传 URL 则用 `settings.database_url`。
 
-    is_ok: bool
-    available: frozenset[str]
-    missing: frozenset[str]
-    checked_at: datetime
-    error: str | None = None
-
-
-_last_model_check: ModelCheckResult | None = None
-
-
-def get_last_model_check() -> ModelCheckResult | None:
-    """返回最近一次 `check_models()` 的结果（没跑过则为 `None`）。"""
-    return _last_model_check
-
-
-def get_chat_model(
-    *,
-    tier: ModelTier = "flash",
-    thinking: bool = True,
-    api_key: SecretStr | None = None,
-    **kwargs: Any,
-) -> ChatDeepSeekPatched:
-    """取唯一的 DeepSeek 模型实例。
-
-    `api_key` 是给测试留的缝：不传则取 `settings.deepseek_api_key`，缺失即报错。
-    这样"构造模型"这个动作在物理上只存在于本文件，测试不必自己 new 一个。
-
-    思考模式由 `extra_body` 控制，**不是靠换模型**（§1）。注意思考模式下
-    `temperature` / `top_p` 等参数全部不生效，设了不报错但会被忽略。
+    传参是给测试留的缝（照 `llm.client.get_chat_model(api_key=...)` 的做法）：
+    **构造引擎这个动作在物理上只有这一处**，测试不必自己 new 一个。
     """
-    resolved_key = api_key or settings.deepseek_api_key
-    if resolved_key is None:
-        # 阶段四会把它换成 errors.ConfigError（见「待定项 2」）。此处不留 TODO 占位。
-        raise RuntimeError(
-            "DEEPSEEK_API_KEY 未设置，无法构造模型实例。请在 .env 配置后重试。"
-        )
-
-    extra_body: dict[str, Any] = dict(kwargs.pop("extra_body", None) or {})
-    extra_body.setdefault("thinking", {"type": "enabled" if thinking else "disabled"})
-
-    return ChatDeepSeekPatched(
-        model=_TIER_TO_MODEL_ID[tier],
-        api_key=resolved_key,
-        # 必须显式传：库的默认值读的是环境变量 DEEPSEEK_API_BASE，与本项目的
-        # DEEPSEEK_API_BASE_URL 不同名，不传就会打到库自己的默认端点。
-        base_url=settings.deepseek_api_base_url,
-        timeout=_DEFAULT_REQUEST_TIMEOUT,
-        max_retries=_DEFAULT_MAX_RETRIES,
-        extra_body=extra_body,
-        **kwargs,
-    )
+    url = database_url or settings.database_url
+    return create_async_engine(url, **build_engine_kwargs(url))
 
 
-def check_models(*, api_key: SecretStr | None = None) -> ModelCheckResult:
-    """调一次 `models.list()`，与 `config.EXPECTED_MODEL_IDS` 比对（§1）。
-
-    **只告警不阻断。** 模型名本身正在漂移（§1 明说定价页写的是
-    `deepseek-flash`，`deepseek-v4-flash` 是仍在被路由的旧名），把它做成硬失败
-    等于让一次上游改名打挂整个应用。结果存进模块级变量，供阶段四的 `/health` 读。
-    """
-    global _last_model_check
-
-    resolved_key = api_key or settings.deepseek_api_key
-    checked_at = datetime.now(UTC)
-
-    if resolved_key is None:
-        result = ModelCheckResult(
-            is_ok=False,
-            available=frozenset(),
-            missing=EXPECTED_MODEL_IDS,
-            checked_at=checked_at,
-            error="DEEPSEEK_API_KEY 未设置",
-        )
-    else:
-        client = openai.OpenAI(
-            api_key=resolved_key.get_secret_value(),
-            base_url=settings.deepseek_api_base_url,
-            timeout=10.0,
-            max_retries=1,
-        )
-        try:
-            available = frozenset(model.id for model in client.models.list().data)
-        except openai.OpenAIError as exc:
-            # 捕获链条的根（§3.2）：鉴权、限流、连接、端点不存在都归这里，
-            # 不做硬失败。日志只记类型与消息，不记 key。
-            result = ModelCheckResult(
-                is_ok=False,
-                available=frozenset(),
-                missing=EXPECTED_MODEL_IDS,
-                checked_at=checked_at,
-                error=f"{type(exc).__name__}: {exc}",
-            )
-        else:
-            missing = frozenset(EXPECTED_MODEL_IDS - available)
-            result = ModelCheckResult(
-                is_ok=not missing,
-                available=available,
-                missing=missing,
-                checked_at=checked_at,
-            )
-
-    _last_model_check = result
-    if result.is_ok:
-        logger.info("llm.models_check.ok", available=sorted(result.available))
-    else:
-        logger.error(
-            "llm.models_check.mismatch",
-            expected=sorted(EXPECTED_MODEL_IDS),
-            missing=sorted(result.missing),
-            error=result.error,
-        )
-    return result
+def create_session_factory(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]:
+    """`expire_on_commit=False`：提交后还要读对象属性是常态（阶段四/六），
+    默认的过期会在 async 场景里抛 `MissingGreenlet`。"""
+    return async_sessionmaker(engine, expire_on_commit=False)
 
 
-def _main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(
-        prog="pyassist.llm.client",
-        description="DeepSeek 模型名校验（§1）。人工步骤，不进 CI。",
-    )
-    parser.add_argument(
-        "--check-models",
-        action="store_true",
-        help="调用 models.list()，比对 config.EXPECTED_MODEL_IDS",
-    )
-    args = parser.parse_args(argv)
-    if not args.check_models:
-        parser.print_help()
-        return 2
-
-    result = check_models()
-    if result.is_ok:
-        print(f"模型名校验通过：{sorted(result.available)}")
-        return 0
-    print(f"模型名校验未通过（仅告警，不阻断）：missing={sorted(result.missing)} error={result.error}")
-    return 1
-
-
-if __name__ == "__main__":
-    sys.exit(_main())
+@asynccontextmanager
+async def open_session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
+    """一次业务操作一个 Session，退出即关闭。阶段四的依赖注入会包一层它。"""
+    factory = create_session_factory(engine)
+    async with factory() as session:
+        yield session
 ```
 
-三条要点：
-
-1. **`base_url` 必须显式传**（见上文注释）。这是"库的默认值恰好不是你想要的默认值"这类静默故障的典型，值得在文件里留一行理由。
-2. `check_models()` 里 `except openai.OpenAIError` 是 §3.2 的"捕获链条再往上兜一层"，**不是** `except Exception` —— §4 禁止的是后者。
-3. **不做实例缓存**（见 §0「不做」表）。本阶段没有热路径，等阶段六有真实调用频率时再议。
-4. `thinking=False` 是 §1「兜底」的逃生门：补丁若阻塞进度，可以临时关闭思考模式让图先跑起来，**但必须在 `docs/decisions/` 写下决定与恢复计划**。默认值为 `True`，不要为了"先跑通"把它改成默认关闭。
-
-### 4.3 `src/pyassist/llm/tracing.py`
+### 4.3 `src/pyassist/db/models.py`
 
 ```python
-"""★ 唯一 Token/成本记账（§2）。
+"""SQLAlchemy ORM（§2）。**没有 `messages` 表。**
 
-两条铁律来自 §3.1：
-- 缓存命中与未命中的输入 token **必须分别记录、分别计价**（输入价差可达 50 倍）；
-- 错峰时段半价，单价一律来自 `config.PRICE_TABLE`，**不用 float、不硬编码**。
-
-本模块只做「一次调用的用量与成本」。累计与熔断是阶段三（Token 账本表）与
-阶段八（单日上限），本阶段不建。
+对话历史的唯一真相是 LangGraph 检查点（`agent/checkpointer.py`）；业务表只存
+"人的行为结果"——用户、会话、练习提交、错题、Token 账本。在这里再存一份消息，
+就制造了两份会互相矛盾的对话历史，正是 §2 要防的分叉。
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
+from uuid import uuid4
 
-from langchain_core.messages import AIMessage
-
-from pyassist.config import PEAK_WINDOWS_UTC, PRICE_TABLE
-from pyassist.logging import get_logger
-
-logger = get_logger(__name__)
-
-MICRO_TOKENS_PER_PRICE_UNIT = Decimal(1_000_000)  # 单价表单位是 USD / 1M tokens
-_PEAK_WEEKDAYS = frozenset({0, 1, 2, 3, 4})  # UTC 周一至周五
+from sqlalchemy import Boolean, DateTime, ForeignKey, Integer, Numeric, String, Text
+from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
-@dataclass(frozen=True, slots=True)
-class UsageSnapshot:
-    """字段名与 §3.1 信封的 `meta.usage` 一一对应，阶段四直接序列化，不再改名。"""
-
-    prompt_tokens: int
-    completion_tokens: int
-    cached_tokens: int
-    cost_usd: Decimal
-    is_off_peak: bool
+class Base(DeclarativeBase):
+    """所有业务表的基类。`migrations/env.py` 的 `target_metadata` 用它。"""
 
 
-def is_off_peak(now_utc: datetime) -> bool:
-    """UTC 周一至周五 01:00–04:00 与 06:00–10:00 为峰值，其余时段半价（§1）。
+def _utcnow() -> datetime:
+    return datetime.now(UTC)
 
-    半开区间 `[start, end)`：10:00 整已不在窗口内。
+
+def _new_id() -> str:
+    return uuid4().hex
+
+
+class User(Base):
+    __tablename__ = "users"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    display_name: Mapped[str | None] = mapped_column(String(64), default=None)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class ChatSession(Base):
+    """会话。**`id` 就是 LangGraph 的 `thread_id`** —— 不另立一套身份。
+
+    §2 说续跑只要 `config={"configurable": {"thread_id": <会话 id>}}`；
+    若这里再造一个 `thread_id` 列，同一件事就有两个 id，早晚不一致。
+    类名叫 `ChatSession` 是为了不和 SQLAlchemy 的 `Session` 混淆。
     """
-    if now_utc.tzinfo is None:
-        raise ValueError("is_off_peak 只接受带时区的时刻，避免本地时区把价格算错")
-    moment = now_utc.astimezone(UTC)
-    if moment.weekday() not in _PEAK_WEEKDAYS:
-        return True
-    current = moment.time()
-    return not any(start <= current < end for start, end in PEAK_WINDOWS_UTC)
 
+    __tablename__ = "sessions"
 
-def price_usage(
-    model_id: str,
-    *,
-    cached_tokens: int,
-    uncached_input_tokens: int,
-    output_tokens: int,
-    is_off_peak: bool,
-) -> Decimal:
-    """按 `config.PRICE_TABLE` 分别计价后求和。单价单位 USD / 1M tokens。"""
-    tier = PRICE_TABLE.get(model_id)
-    if tier is None:
-        raise RuntimeError(
-            f"PRICE_TABLE 里没有 {model_id!r} 的单价。模型名只允许写在 config.py（§1 / §2）。"
-        )
-
-    if is_off_peak:
-        cache_hit_price = tier.cache_hit_off_peak
-        input_miss_price = tier.input_miss_off_peak
-        output_price = tier.output_off_peak
-    else:
-        cache_hit_price = tier.cache_hit_peak
-        input_miss_price = tier.input_miss_peak
-        output_price = tier.output_peak
-
-    total = (
-        Decimal(cached_tokens) * cache_hit_price
-        + Decimal(uncached_input_tokens) * input_miss_price
-        + Decimal(output_tokens) * output_price
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=_utcnow, onupdate=_utcnow
     )
-    return total / MICRO_TOKENS_PER_PRICE_UNIT
 
 
-def extract_usage(
-    message: AIMessage,
-    *,
-    model_id: str,
-    now_utc: datetime | None = None,
-) -> UsageSnapshot:
-    """从 `AIMessage.usage_metadata` 取用量并计价。
+class ExerciseAttempt(Base):
+    """v3 的练习提交（§5.4）。"""
 
-    **只认 `usage_metadata`。** 缓存命中数的归一化在 `llm/deepseek_chat.py` 完成，
-    这里不去读 `response_metadata["token_usage"]` 兜底 —— 两条会互相矛盾的取数
-    路径比一条不完整的路径更危险（见「待定项 4」）。
+    __tablename__ = "exercise_attempts"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)
+    exercise_id: Mapped[str] = mapped_column(String(64), index=True)
+    topic: Mapped[str] = mapped_column(String(32))
+    is_passed: Mapped[bool] = mapped_column(Boolean, default=False)
+    score: Mapped[int | None] = mapped_column(Integer, default=None)
+    # 用户代码落库是**产品数据**（`GET /history` 要回放），
+    # 与 §3.2「日志不记完整用户代码」不冲突 —— 那条约束的是 structlog，不是数据库。
+    submitted_code: Mapped[str] = mapped_column(Text)
+    stdout: Mapped[str | None] = mapped_column(Text, default=None)
+    stderr: Mapped[str | None] = mapped_column(Text, default=None)
+    duration_ms: Mapped[int | None] = mapped_column(Integer, default=None)
+    # 幂等键：节点重跑时同一个键只落一行（§2）。权威见 repositories.py。
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class Mistake(Base):
+    """错题（§5.4 / §5.5）。v4 的推荐**必须引用实际做错的题目 id**，所以要有 `exercise_id`。"""
+
+    __tablename__ = "mistakes"
+
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    exercise_id: Mapped[str | None] = mapped_column(String(64), default=None, index=True)
+    topic: Mapped[str] = mapped_column(String(32))
+    error_signature: Mapped[str | None] = mapped_column(String(256), default=None)
+    is_resolved: Mapped[bool] = mapped_column(Boolean, default=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
+
+
+class TokenLedger(Base):
+    """Token 账本。**列名照抄 `llm.tracing.UsageSnapshot` = §3.1 信封 `meta.usage`。**
+
+    阶段二留下的缝：`UsageSnapshot` 已经在算这些数，阶段四的信封直接序列化它，
+    阶段八的 `/stats` 与熔断读这张表 —— 三处字段名一致，不需要任何映射层。
     """
-    moment = now_utc or datetime.now(UTC)
-    off_peak = is_off_peak(moment)
 
-    usage = message.usage_metadata
-    if usage is None:
-        return UsageSnapshot(
-            prompt_tokens=0,
-            completion_tokens=0,
-            cached_tokens=0,
-            cost_usd=Decimal(0),
-            is_off_peak=off_peak,
-        )
+    __tablename__ = "token_ledger"
 
-    prompt_tokens = usage["input_tokens"]
-    completion_tokens = usage["output_tokens"]
-    cached_tokens = int((usage.get("input_token_details") or {}).get("cache_read") or 0)
-    # 防御：上游若给出大于输入总量的命中数，未命中按 0 处理，不产生负数计费。
-    cached_tokens = min(cached_tokens, prompt_tokens)
-
-    cost_usd = price_usage(
-        model_id,
-        cached_tokens=cached_tokens,
-        uncached_input_tokens=prompt_tokens - cached_tokens,
-        output_tokens=completion_tokens,
-        is_off_peak=off_peak,
-    )
-    return UsageSnapshot(
-        prompt_tokens=prompt_tokens,
-        completion_tokens=completion_tokens,
-        cached_tokens=cached_tokens,
-        cost_usd=cost_usd,
-        is_off_peak=off_peak,
-    )
-
-
-def log_llm_response(snapshot: UsageSnapshot, *, model_id: str, latency_ms: int) -> None:
-    """按 §3.5 打 `llm.response`（带 usage）。
-
-    字段名固定：`request_id` / `session_id` / `user_id` 由 `logging.bind_request_context()`
-    绑定，`latency_ms` / usage 各字段在这里显式带上。**不记 prompt 全文、不记 API Key。**
-    `llm.request` 由调用方在自己的节点里打（阶段六起），本模块只管记账侧。
-    """
-    logger.info(
-        "llm.response",
-        model_id=model_id,
-        prompt_tokens=snapshot.prompt_tokens,
-        completion_tokens=snapshot.completion_tokens,
-        cached_tokens=snapshot.cached_tokens,
-        cost_usd=str(snapshot.cost_usd),  # 日志里用字符串，避免 float 精度假象
-        is_off_peak=snapshot.is_off_peak,
-        latency_ms=latency_ms,
-    )
+    id: Mapped[str] = mapped_column(String(32), primary_key=True, default=_new_id)
+    session_id: Mapped[str] = mapped_column(ForeignKey("sessions.id"), index=True)
+    model_id: Mapped[str] = mapped_column(String(64))
+    prompt_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    completion_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    cached_tokens: Mapped[int] = mapped_column(Integer, default=0)
+    # Decimal 落库：单价来自 config.PRICE_TABLE（也是 Decimal）。用 Float 会产生精度假象。
+    cost_usd: Mapped[Decimal] = mapped_column(Numeric(18, 8), default=Decimal(0))
+    is_off_peak: Mapped[bool] = mapped_column(Boolean, default=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128), unique=True, index=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_utcnow)
 ```
 
 三条要点：
 
-1. **全程 `Decimal`**，不出现 `float`。`cost_usd` 到阶段四的信封里才转 JSON number，转换发生在序列化边界。
-2. `cached_tokens = min(cached_tokens, prompt_tokens)` 是防负数计费的**防御**，不是对上游的假设。
-3. `is_off_peak` 对无时区输入直接报错 —— 用本地时区算价格是"看起来对但全错"的典型。
+1. **`DateTime(timezone=True)` 在 SQLite 上读回来是 naive**（SQLite 没有时区类型）。这是已知取舍：SQLite 只做开发，PG 上是真正的 `timestamptz`。写死在 `_utcnow()` 里返回带时区的 UTC，读取侧的归一化留给阶段四的序列化层 —— 本阶段不做"读出来再补时区"的加工，那会变成第二套时间语义。
+2. **`idempotency_key` 是 `unique=True`**，索引由唯一约束自动提供（额外 `index=True` 只是为了显式可见）。它是幂等的**权威**。
+3. 表名复数 `snake_case`、类名 `PascalCase`、时间字段 `*_at`、布尔 `is_*` —— 全部照 §3.3。
 
-### 4.4 `src/pyassist/llm/prompts/`
-
-**`__init__.py`**（加载器；本文件不是占位包，见 T6）：
+### 4.4 `src/pyassist/db/repositories.py`
 
 ```python
-"""Prompt 模板加载器（§2：prompt 文本的唯一家）。
+"""★ 唯一 SQL 出口（§2）。
 
-阶段一起所有 `__init__.py` 保持为空。这里有意破例：`prompts` 不是占位包，
-它的公开面就是 `load_prompt()`；另开 `loader.py` 只多一个文件，不多一层抽象。
+`services/*` / 图节点 / 阶段四的路由**一律不写 SQL**，只调这里的函数。
+例外只有 `migrations/` —— 迁移本来就是 DDL，不算业务读写。
+
+幂等的权威是表上的 `UNIQUE` 约束（`idempotency_key`），不是应用层的 `if`：
+恢复会重跑被中断的节点（§2），"先查再插"在并发下仍会撞，只有约束能真正兜住。
 """
 
 from __future__ import annotations
 
-from functools import lru_cache
+from collections.abc import Sequence
+from decimal import Decimal
+
+from sqlalchemy import func, select
+from sqlalchemy.exc import IntegrityError
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from pyassist.db.models import ChatSession, ExerciseAttempt, Mistake, TokenLedger, User
+from pyassist.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+async def ensure_user(
+    session: AsyncSession, *, user_id: str, display_name: str | None = None
+) -> User:
+    """幂等建档。`user_id` 由调用方给出（将来从鉴权来），不用随机值。"""
+    existing = await session.get(User, user_id)
+    if existing is not None:
+        return existing
+    user = User(id=user_id, display_name=display_name)
+    session.add(user)
+    await session.flush()
+    return user
+
+
+async def create_chat_session(
+    session: AsyncSession, *, session_id: str, user_id: str
+) -> ChatSession:
+    """建会话。`session_id` 同时就是 LangGraph 的 `thread_id`（见 models.py）。"""
+    existing = await session.get(ChatSession, session_id)
+    if existing is not None:
+        return existing
+    chat_session = ChatSession(id=session_id, user_id=user_id)
+    session.add(chat_session)
+    await session.flush()
+    return chat_session
+
+
+async def record_attempt(
+    session: AsyncSession,
+    *,
+    idempotency_key: str,
+    session_id: str,
+    exercise_id: str,
+    topic: str,
+    submitted_code: str,
+    is_passed: bool,
+    score: int | None = None,
+    stdout: str | None = None,
+    stderr: str | None = None,
+    duration_ms: int | None = None,
+) -> bool:
+    """落一条练习提交。**已被同一个 `idempotency_key` 记过则返回 `False`，不重复落。**
+
+    返回 `bool` 而不是 `ExerciseAttempt`：调用方（节点）需要知道"这次跑是新的还是重跑"，
+    但不需要拿到行对象。阶段八要读记录时另开查询函数，不从这里返回。
+    """
+    if await _already_recorded(session, ExerciseAttempt, idempotency_key):
+        return False
+    try:
+        # SAVEPOINT（begin_nested）：唯一约束冲突**只回滚这一条插入**，
+        # 不牵连调用方在同一事务里已经做过的别的写入。
+        # 换成 session.rollback() 会把整个事务一起丢掉 —— 那是个等着被踩的坑。
+        async with session.begin_nested():
+            session.add(
+                ExerciseAttempt(
+                    idempotency_key=idempotency_key,
+                    session_id=session_id,
+                    exercise_id=exercise_id,
+                    topic=topic,
+                    submitted_code=submitted_code,
+                    is_passed=is_passed,
+                    score=score,
+                    stdout=stdout,
+                    stderr=stderr,
+                    duration_ms=duration_ms,
+                )
+            )
+            await session.flush()
+    except IntegrityError:
+        # 并发下另一个任务抢先落了同一把键 —— 这正是唯一约束存在的意义。
+        # 捕获的是具体异常（§3.2「捕获链条不捕获大类」），不是 except Exception。
+        logger.info("db.attempt.duplicate", idempotency_key=idempotency_key)
+        return False
+    return True
+
+
+async def record_mistake(
+    session: AsyncSession,
+    *,
+    idempotency_key: str,
+    user_id: str,
+    topic: str,
+    exercise_id: str | None = None,
+    error_signature: str | None = None,
+) -> bool:
+    """落一条错题（幂等，语义同 `record_attempt`）。"""
+    ...
+
+
+async def append_token_usage(
+    session: AsyncSession,
+    *,
+    idempotency_key: str,
+    session_id: str,
+    model_id: str,
+    prompt_tokens: int,
+    completion_tokens: int,
+    cached_tokens: int,
+    cost_usd: Decimal,
+    is_off_peak: bool,
+) -> bool:
+    """追加一条 Token 账本（幂等）。
+
+    **本阶段不接任何请求路径**：阶段四的信封与阶段八的 `/stats` 才调它。
+    字段名与 `llm.tracing.UsageSnapshot` 一一对应，调用方直接按属性名传。
+    """
+    ...
+
+
+async def list_attempts(
+    session: AsyncSession, *, session_id: str, limit: int = 50
+) -> Sequence[ExerciseAttempt]:
+    """`GET /history` 用（阶段八）。只有一处 `select()`，不散落在 service 里。"""
+    result = await session.scalars(
+        select(ExerciseAttempt)
+        .where(ExerciseAttempt.session_id == session_id)
+        .order_by(ExerciseAttempt.created_at.desc())
+        .limit(limit)
+    )
+    return result.all()
+
+
+async def count_attempts(session: AsyncSession) -> int:
+    """测试与阶段八的统计用。"""
+    return await session.scalar(select(func.count()).select_from(ExerciseAttempt)) or 0
+
+
+async def _already_recorded(
+    session: AsyncSession, model: type[ExerciseAttempt] | type[Mistake] | type[TokenLedger],
+    idempotency_key: str,
+) -> bool:
+    """键是否已存在。**只是快路径优化，权威是表上的唯一约束。**"""
+    found = await session.scalar(
+        select(model.id).where(model.idempotency_key == idempotency_key)
+    )
+    return found is not None
+```
+
+三条要点：
+
+1. **不用 `sqlalchemy.dialects.sqlite.insert(...).on_conflict_do_nothing()`**。它能把方言绑进仓储，生产切 PG 时得改代码 —— 而 §1 的整个设计前提是"换库只改 `DATABASE_URL`"。`select` 探测 + `IntegrityError` 兜底是两种方言都成立的做法。
+2. 回滚的粒度是 **SAVEPOINT**（`session.begin_nested()`），不是整个事务。这一点是刻意选的：如果写成 `session.rollback()`，一次正常的"重复写入"就会把调用方在同一事务里已经做过的其它写入一起丢掉 —— 而"重复写入"在恢复重跑时是**常态**，不是异常路径。用 SAVEPOINT 之后，`record_*` 的调用方不必关心事务编排，这条重担不会外溢成调用方的纪律要求。
+3. 查询函数与写入函数分开返回（`bool` vs 行对象），避免"写入顺便返回行"引诱调用方在写入路径上做读取加工。
+
+### 4.5 `src/pyassist/agent/checkpointer.py`
+
+```python
+"""★ 唯一检查点构造点（§2）。
+
+开发：`AsyncSqliteSaver` → `data/app.db`（与业务表**同一个文件**）。
+生产：`AsyncPostgresSaver` → 同一个 PG 实例。**禁止 `MemorySaver`**（重启即丢）。
+
+为什么是异步类而不是 ROADMAP 字面写的 `SqliteSaver`：
+`langgraph.checkpoint.sqlite.SqliteSaver` **只支持同步**，而 §2 禁止在 async 路由里
+阻塞事件循环、§3.4 要求 DB 路径 async。两类的表结构完全相同，只是接口。
+详见 SPEC §5「与 ROADMAP 验收的差异」第 1 条。
+
+为什么是 `@asynccontextmanager` 而不是模块级单例：
+`AsyncSqliteSaver.__init__` 会调 `asyncio.get_running_loop()`，import 期构造直接抛。
+构造点只能在**运行中的事件循环内**进入 —— 阶段四的 FastAPI `lifespan` 是它唯一的
+长生命周期宿主。
+
+Postgres 类是**函数内 import**：它们会拉进 psycopg，而 psycopg 的二进制轮子带
+libpq。放在模块级，一台没有 libpq 的机器上连 SQLite 路径与全部测试都会 import 失败 ——
+一个开发期用不到的后端不该有这个能力。SQLite 类留在模块级（它是开发期的主路径，
+早失败更早发现）。
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from langgraph.checkpoint.base import BaseCheckpointSaver
+from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
+from sqlalchemy.engine import make_url
+
+from pyassist.config import resolve_sqlite_path, settings, to_psycopg_conninfo
+from pyassist.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def open_checkpointer(
+    *, database_url: str | None = None
+) -> AsyncIterator[BaseCheckpointSaver[str]]:
+    """打开唯一的检查点。不传 URL 则用 `settings.database_url`。
+
+    `database_url` 是给测试留的缝：测试用 `tmp_path`，绝不污染真实的 `data/app.db`。
+
+    **不在这里调 `setup()`** —— §2 明确"不要在请求路径里调"。SQLite 侧上游会在
+    首次使用时懒调用（幂等，无害）；PG 侧由迁移（`migrations/env.py`）保证已建表。
+    """
+    resolved = database_url or settings.database_url
+    backend = make_url(resolved).get_backend_name()
+
+    if backend == "sqlite":
+        path = resolve_sqlite_path(resolved)
+        async with AsyncSqliteSaver.from_conn_string(str(path)) as saver:
+            logger.info("checkpointer.opened", backend="sqlite", db_path=str(path))
+            yield saver
+        return
+
+    if backend == "postgresql":
+        # **函数内 import**，不是模块级：`langgraph.checkpoint.postgres.aio` 会拉进
+        # psycopg / psycopg_pool，而 psycopg 的二进制轮子带 libpq。放在模块级，
+        # 一台没有 libpq 的机器上连 SQLite 路径和**全部测试**都会 import 失败 ——
+        # 一个开发期根本用不到的后端，不该有能力拖垮开发环境。
+        from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
+
+        async with AsyncPostgresSaver.from_conn_string(to_psycopg_conninfo(resolved)) as saver:
+            logger.info("checkpointer.opened", backend="postgresql")
+            yield saver
+        return
+
+    raise ValueError(f"不支持的数据库后端：{backend!r}（§2 只允许 SQLite / PostgreSQL）")
+
+
+async def setup_checkpointer(*, database_url: str | None = None) -> None:
+    """建检查点表。**只给迁移脚本调用**（§2：不在请求路径里调）。
+
+    幂等（`is_setup` 标志 + `CREATE TABLE IF NOT EXISTS`），所以"迁移跑一次、
+    运行时上游再懒调用"不会撞表，不必额外去重。
+    """
+    async with open_checkpointer(database_url=database_url) as saver:
+        await saver.setup()
+```
+
+### 4.6 `src/pyassist/agent/store.py`
+
+```python
+"""★ 唯一长期记忆 Store 构造点（§2）。
+
+长期记忆与用户画像走 LangGraph `Store`，**不走 `db/repositories.py`，也不另开
+第二个向量库**。`services/memory.py`（阶段八）只负责"从对话里抽取偏好"这类加工，
+持久化一律经这里。
+
+`index=None`：不配 embeddings。向量模型选型是阶段五的待定项 1，本阶段**不替它拍板**；
+语义检索所需的 index 配置是阶段八记忆功能的缝。
+
+注意：`langgraph.store.sqlite.base` 有**模块级**的 `import sqlite_vec`，
+所以本模块的 import 硬依赖 `sqlite-vec`（已由 `langgraph-checkpoint-sqlite` 声明）。
+"""
+
+from __future__ import annotations
+
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from langgraph.store.base import BaseStore
+from langgraph.store.sqlite.aio import AsyncSqliteStore
+from sqlalchemy.engine import make_url
+
+from pyassist.config import resolve_sqlite_path, settings, to_psycopg_conninfo
+from pyassist.logging import get_logger
+
+logger = get_logger(__name__)
+
+
+@asynccontextmanager
+async def open_store(*, database_url: str | None = None) -> AsyncIterator[BaseStore]:
+    """打开唯一的长期记忆 Store。与检查点指向**同一个库**（§2）。"""
+    resolved = database_url or settings.database_url
+    backend = make_url(resolved).get_backend_name()
+
+    if backend == "sqlite":
+        path = resolve_sqlite_path(resolved)
+        async with AsyncSqliteStore.from_conn_string(str(path), index=None) as store:
+            logger.info("store.opened", backend="sqlite", db_path=str(path))
+            yield store
+        return
+
+    if backend == "postgresql":
+        # 函数内 import，理由同 `agent/checkpointer.py`（psycopg → libpq）。
+        from langgraph.store.postgres.aio import AsyncPostgresStore
+
+        async with AsyncPostgresStore.from_conn_string(
+            to_psycopg_conninfo(resolved), index=None
+        ) as store:
+            logger.info("store.opened", backend="postgresql")
+            yield store
+        return
+
+    raise ValueError(f"不支持的数据库后端：{backend!r}（§2 只允许 SQLite / PostgreSQL）")
+
+
+async def setup_store(*, database_url: str | None = None) -> None:
+    """建 Store 的表。**只给迁移脚本调用**。幂等，语义同 `setup_checkpointer`。"""
+    async with open_store(database_url=database_url) as store:
+        await store.setup()
+```
+
+### 4.7 迁移
+
+**`alembic.ini`**：
+
+```ini
+[alembic]
+script_location = migrations
+prepend_sys_path = .
+path_separator = os
+# Deliberately empty: the single source of the URL is pyassist.config (SPEC section 2,
+# single config entry point). migrations/env.py reads it and injects it.
+# NOTE: keep this file ASCII-only -- configparser reads it with the system locale codec
+# (GBK on a zh-CN Windows box), so UTF-8 comments here crash `alembic` before it starts.
+sqlalchemy.url =
+```
+
+不给 `[loggers]` 那一段 —— `env.py` 不调 `fileConfig`，少一段样板，也少一处 ruff 要过的地方。
+
+> **实施期修正（2026-10-03）**：本节的 `alembic.ini` 草案原本带**中文注释** —— 实测在本机（zh-CN
+> Windows）直接 `UnicodeDecodeError: 'gbk' codec can't decode`，因为 `configparser` 用**系统
+> locale 编码**读它，不是 UTF-8。故改为 ASCII-only 的英文注释。**约定：`alembic.ini` 不许出现非
+> ASCII 字符**（同理适用于任何被 `configparser` 读的文件）。
+>
+> 另外两处草案在 `ruff` / `mypy --strict` 下要被改：`include_object` 的 `if/return/return` 触发
+> `SIM103`，收成单个 `return not (...)`；`setup_checkpointer/setup_store` 里的 `saver.setup()` /
+> `store.setup()` 在 `BaseCheckpointSaver` / `BaseStore` 基类上没有声明（mypy `attr-defined`），
+> 各加一个模块内 `_HasSetup` Protocol + `cast`，而不是 `# type: ignore`。
+
+**`migrations/env.py`**：
+
+```python
+"""Alembic 环境（同步）。
+
+刻意用**同步**引擎：迁移是 CLI 的一次性动作，而 `checkpointer.setup()` /
+`store.setup()` 是异步的 —— 只有在**没有运行中事件循环**的同步上下文里，
+才能安全地 `asyncio.run(...)`。用 Alembic 的异步模板（`connection.run_sync`）
+反而会因为 greenlet 外层已有事件循环而炸。
+
+LangGraph 的地表**不写进 0001_init.py 的 upgrade()**：那里还处在迁移事务内，
+此时再开一条连接去建表，会和迁移事务抢同一个 SQLite 文件的写锁。改成在
+**事务提交、连接关闭之后**建 —— 顺序见 `run_migrations_online()`。
+"""
+
+from __future__ import annotations
+
+import asyncio
+
+from alembic import context
+from sqlalchemy import create_engine
+from sqlalchemy.engine import make_url
+
+from pyassist.agent.checkpointer import setup_checkpointer
+from pyassist.agent.store import setup_store
+from pyassist.config import settings
+from pyassist.db.models import Base
+
+config = context.config
+target_metadata = Base.metadata
+
+# LangGraph 自己的表不归 Alembic 管（它们的形状由上游的 setup() 决定，会随
+# langgraph 版本变）。没有这个过滤器，`alembic check` 会把它们报成"数据库里多出来的
+# 表"并要求 DROP —— 一个会把检查点连同对话历史一起删掉的假告警。
+_LANGGRAPH_TABLE_PREFIXES = ("checkpoint", "writes", "store", "vector")
+
+
+def include_object(
+    obj: object, name: str | None, type_: str, reflected: bool, compare_to: object
+) -> bool:
+    """只把**业务表**纳入 Alembic 的视野。"""
+    if type_ == "table" and name is not None:
+        if name.startswith(_LANGGRAPH_TABLE_PREFIXES):
+            return False
+    return True
+
+
+# 迁移用同步驱动。这个映射只属于迁移流程 —— §2 的"不得出现方言分支"针对的是
+# db/session.py（业务路径），迁移从来就是一次性的 DDL 工具。
+_SYNC_DRIVERS = {
+    "sqlite+aiosqlite": "sqlite+pysqlite",
+    "postgresql+psycopg": "postgresql+psycopg",  # psycopg3 同步异步同名驱动
+}
+
+
+def _sync_url() -> str:
+    url = make_url(settings.database_url)
+    return url.set(drivername=_SYNC_DRIVERS.get(url.drivername, url.drivername)).render_as_string(
+        hide_password=False
+    )
+
+
+def _setup_langgraph_storage() -> None:
+    """建检查点与 Store 的表。幂等，重复跑安全（§2「setup 只需在建库时跑一次」）。"""
+
+    async def _run() -> None:
+        await setup_checkpointer()
+        await setup_store()
+
+    asyncio.run(_run())
+
+
+def run_migrations_offline() -> None:
+    """只生成 SQL（`alembic upgrade --sql`）：不建 LangGraph 的表，也不连库。"""
+    context.configure(
+        url=_sync_url(),
+        target_metadata=target_metadata,
+        include_object=include_object,
+        literal_binds=True,
+    )
+    with context.begin_transaction():
+        context.run_migrations()
+
+
+def run_migrations_online() -> None:
+    engine = create_engine(_sync_url())
+    try:
+        with engine.connect() as connection:
+            context.configure(
+                connection=connection,
+                target_metadata=target_metadata,
+                include_object=include_object,
+            )
+            with context.begin_transaction():
+                context.run_migrations()
+    finally:
+        engine.dispose()
+    # 到这里迁移事务已提交、连接已关闭 —— 再建 LangGraph 的表，不抢写锁。
+    _setup_langgraph_storage()
+
+
+if context.is_offline_mode():
+    run_migrations_offline()
+else:
+    run_migrations_online()
+```
+
+**`migrations/versions/0001_init.py`**：
+
+```python
+"""0001 · 建业务表（§2）。**没有 `messages` 表。**
+
+LangGraph 的 `checkpoints` / `writes` / store 表**不在这里** —— 它们由
+`migrations/env.py` 在迁移事务提交之后调 `checkpointer.setup()` / `store.setup()`
+建（幂等）。理由见 env.py 的模块 docstring（SQLite 写锁）。
+
+Revision ID: 0001_init
+Revises:
+Create Date: 2026-10-03
+"""
+
+from __future__ import annotations
+
+import sqlalchemy as sa
+from alembic import op
+
+revision = "0001_init"
+down_revision = None
+branch_labels = None
+depends_on = None
+
+_BUSINESS_TABLES = ("token_ledger", "mistakes", "exercise_attempts", "sessions", "users")
+
+
+def upgrade() -> None:
+    op.create_table(
+        "users",
+        sa.Column("id", sa.String(32), primary_key=True),
+        sa.Column("display_name", sa.String(64), nullable=True),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    op.create_table(
+        "sessions",
+        sa.Column("id", sa.String(32), primary_key=True),  # == LangGraph thread_id
+        sa.Column("user_id", sa.String(32), sa.ForeignKey("users.id"), nullable=False),
+        sa.Column("created_at", sa.DateTime(timezone=True), nullable=False),
+        sa.Column("updated_at", sa.DateTime(timezone=True), nullable=False),
+    )
+    op.create_index("ix_sessions_user_id", "sessions", ["user_id"])
+    # exercise_attempts / mistakes / token_ledger 同形，按 models.py 的列一一对应；
+    # 三张表各带一个 unique 的 idempotency_key（幂等的权威，见 repositories.py）。
+    ...
+
+
+def downgrade() -> None:
+    for table in _BUSINESS_TABLES:
+        op.drop_table(table)
+```
+
+**手写而非 autogenerate**：autogenerate 需要活库、且对 `op` 的生成顺序不透明；手写才能让"业务表与 LangGraph 表分两步建"这件事在文件里看得见。
+
+### 4.8 `tests/test_state_ownership.py`
+
+```python
+"""阶段三的边界守护（§2）。
+
+三条断言围绕同一件事：**对话历史只有一个家，业务记录不重复存对话**。
+其中"检查点目标 == 业务表目标 == data/app.db"是**程序化**的 —— 不是读常量比对，
+而是开一条真实连接，问数据库自己"你是哪个文件"。
+"""
+
+from __future__ import annotations
+
+import importlib
+import pkgutil
 from pathlib import Path
-from typing import Final
 
-from langchain_core.prompts import ChatPromptTemplate, MessagesPlaceholder
+import pyassist
+from sqlalchemy.engine import make_url
 
-PROMPT_DIR: Final = Path(__file__).resolve().parent
+from pyassist.agent.checkpointer import open_checkpointer, setup_checkpointer
+from pyassist.agent.store import setup_store
+from pyassist.config import DB_PATH, settings
+from pyassist.db import models
+from pyassist.db.session import create_engine
 
-_HISTORY_PLACEHOLDER: Final = "history"
+
+def test_settings_url_points_at_the_single_db_path() -> None:
+    """URL 与 `DB_PATH` 是同一个文件 —— 路径常量只有一个。"""
+    url = make_url(settings.database_url)
+    assert url.get_backend_name() == "sqlite"  # 开发库
+    assert Path(url.database or "").resolve() == DB_PATH.resolve()
 
 
-@lru_cache(maxsize=None)
-def load_prompt(name: str) -> ChatPromptTemplate:
-    """按名字加载 `llm/prompts/<name>.jinja2`，渲染顺序固定 `system` → `history`。
+def test_engine_resolves_to_the_same_file() -> None:
+    """`db/session.py` 的引擎指向同一个文件。"""
+    engine = create_engine()
+    assert Path(make_url(engine.url).database or "").resolve() == DB_PATH.resolve()
 
-    用 `jinja2` 而不是 f-string：模板里有 Python 代码示例，`{}` 会被 f-string
-    当成变量（§1 也要求用 jinja2）。易变的用户输入永远走 `history`（放最后），
-    系统提示逐字节稳定 —— 这是 DeepSeek 前缀缓存命中的前提（§1）。
+
+async def test_live_checkpointer_connection_is_the_same_file() -> None:
+    """**关键一步**：问活的检查点连接"你的 main 库是哪个文件"。
+
+    这是"程序化断言，不是靠约定"的落点 —— 常量比对只能证明"我们写了同一个字符串"，
+    证明不了连接真的开在那。
     """
-    path = PROMPT_DIR / f"{name}.jinja2"
-    if not path.is_file():
-        raise FileNotFoundError(f"没有这个 prompt 模板：{path}")
-    return ChatPromptTemplate.from_messages(
-        [("system", path.read_text(encoding="utf-8")), MessagesPlaceholder(_HISTORY_PLACEHOLDER)],
-        template_format="jinja2",
-    )
+    async with open_checkpointer() as saver:
+        # 测试不参与 mypy --strict（只管 src/pyassist）；这里刻意伸手到 saver.conn，
+        # 因为 AsyncSqliteSaver 的公开属性就是它。
+        cursor = await saver.conn.execute(
+            "SELECT file FROM pragma_database_list WHERE name = 'main'"
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+    assert row is not None
+    assert Path(row[0]).resolve() == DB_PATH.resolve()
+
+
+async def test_business_and_checkpoint_tables_live_in_one_file(tmp_path: Path) -> None:
+    """业务表、检查点表、Store 表三者都在**同一个文件**里（ROADMAP 的"迁移后检查表结构"）。
+
+    用 tmp 库而不是真实 `data/app.db`，避免测试互相污染、也不 require 迁移先跑过。
+    """
+    url = f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}"
+    engine = create_engine(url)
+    async with engine.begin() as conn:
+        await conn.run_sync(models.Base.metadata.create_all)
+    await setup_checkpointer(database_url=url)
+    await setup_store(database_url=url)
+
+    async with engine.connect() as conn:
+        rows = await conn.exec_driver_sql(
+            "SELECT name FROM sqlite_master WHERE type = 'table'"
+        )
+        names = {row[0] for row in rows}
+    await engine.dispose()
+
+    assert {"users", "sessions", "exercise_attempts", "mistakes", "token_ledger"} <= names
+    assert {"checkpoints", "writes"} <= names
+    assert "store" in names  # AsyncSqliteStore.setup() 建的 KV 表
+
+
+def test_models_declare_no_message_shaped_table() -> None:
+    """§2：不在业务表里再存一份对话消息。
+
+    不只查表名 —— 也查形状：没有任何表同时具备 role/content/tool_calls 这三列。
+    """
+    tables = models.Base.metadata.tables
+    assert "messages" not in tables
+    for table in tables.values():
+        columns = set(table.columns.keys())
+        assert not {"role", "content", "tool_calls"} <= columns, table.name
+
+
+def test_memory_saver_is_not_reachable_from_pyassist() -> None:
+    """§2：`MemorySaver` 重启即丢，从 `src/pyassist` 里 import 不到（ROADMAP 的原文要求）。"""
+    for module_info in pkgutil.walk_packages(pyassist.__path__, prefix="pyassist."):
+        module = importlib.import_module(module_info.name)
+        assert not hasattr(module, "MemorySaver"), module_info.name
 ```
 
-**`qa.jinja2`**（v1 问答的系统提示，阶段五的检索结果由 `history` 注入）：
-
-```jinja
-你是 Python 学习助手。回答必须严格基于检索到的文档片段。
-
-规则：
-1. 只使用文档里出现的内容作答，不得凭记忆补充 API、参数或行为。
-2. 文档里没有答案时，直接说明"文档中没有相关内容"，不要猜测。
-3. 涉及 API 的结论必须能追到具体文档片段。
-4. 代码示例用 ```python 围栏，保持可直接运行。
-5. 用中文回答，术语保留英文原文（generator、decorator、GIL）。
-
-回答语言：{{ output_language }}
-```
-
-**模板硬约束**（`test_prompt_stability.py` 会扫）：禁止时间戳、随机 id、`datetime.now()`、`uuid`、`random`、未排序的 dict 迭代。这些会击穿前缀缓存，让成本涨 50 倍（§1 / §4）。
-
-**关于 ROADMAP 说的"渲染顺序固定 `tools` → `system` → `messages`"**：这三段不由加载器排。`tools` 是 `bind_tools()` 放进**出站 payload 顶层**的独立字段（OpenAI 协议如此），`system` 与 `messages` 才是加载器的产物。加载器要保证的是另一件事、也是真正会出错的那件事：**`system` 段逐字节稳定、一切易变输入只经由 `history`（排在最后）进入**。前缀缓存只认前缀，`history` 在前面塞任何东西都会把命中率打到零。
-
-### 4.5 `tests/test_deepseek_reasoning.py`（三条，全离线）
+### 4.9 `tests/test_idempotency.py`
 
 ```python
-"""阶段二的强制回归测试（§1.4 / §5.1）。
+"""节点幂等守护（§2）：恢复会重跑被中断的节点，副作用必须带去重键。
 
-三条全部离线：前两条直接构造消息调 `_get_request_payload`（不发请求），
-第三条用 `respx` mock 两轮。模型实例一律经 `llm/client.py` 取 ——
-测试里自己构造模型会变成事实上的第二个所有者。
+图和 State 都定义在**本测试文件内** —— 阶段三不建任何产品图（那是阶段六的
+`agent/graphs/*.py` + `agent/state.py`）。这是测试夹具，不是"第二套图状态 schema"。
 """
 
 from __future__ import annotations
 
-import json
+from pathlib import Path
+from typing import TypedDict
 
-import httpx
-import respx
-from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
-from pydantic import SecretStr
+from langgraph.graph import END, START, StateGraph
+from langgraph.types import RetryPolicy
 
-from pyassist.config import MODEL_FLASH, settings
-from pyassist.llm.client import get_chat_model
-
-TEST_API_KEY = SecretStr("test-only-placeholder-key")
-CHAT_URL = f"{settings.deepseek_api_base_url}/chat/completions"
-TOOLS = [
-    {
-        "type": "function",
-        "function": {
-            "name": "search_docs",
-            "description": "检索 Python 文档",
-            "parameters": {"type": "object", "properties": {"query": {"type": "string"}}},
-        },
-    }
-]
-
-
-def _assistant_with_tool_call(*, reasoning: str | None) -> AIMessage:
-    additional = {} if reasoning is None else {"reasoning_content": reasoning}
-    return AIMessage(
-        content="",
-        tool_calls=[{"name": "search_docs", "args": {"query": "asyncio"}, "id": "call_1"}],
-        additional_kwargs=additional,
-    )
-
-
-def test_payload_carries_reasoning_content_of_tool_call_message() -> None:
-    """payload 级：带 tool_calls 的 assistant 消息，reasoning_content 必须出现在出站 JSON 里。"""
-    model = get_chat_model(api_key=TEST_API_KEY)
-    payload = model._get_request_payload(
-        [HumanMessage("asyncio.gather 怎么用"), _assistant_with_tool_call(reasoning="先查文档")]
-    )
-    assistant = next(m for m in payload["messages"] if m["role"] == "assistant")
-    assert assistant["reasoning_content"] == "先查文档"
-
-
-def test_payload_backfills_empty_string_when_reasoning_content_missing() -> None:
-    """回填级：带 tool_calls 却没有 reasoning_content 时，键必须存在且为空串 —— 不是被省略。"""
-    model = get_chat_model(api_key=TEST_API_KEY)
-    payload = model._get_request_payload(
-        [HumanMessage("asyncio.gather 怎么用"), _assistant_with_tool_call(reasoning=None)]
-    )
-    assistant = next(m for m in payload["messages"] if m["role"] == "assistant")
-    assert "reasoning_content" in assistant
-    assert assistant["reasoning_content"] == ""
-
-
-@respx.mock
-def test_second_round_request_keeps_reasoning_content() -> None:
-    """连续两轮回归（强制）：第一轮 tool_calls → ToolMessage → 第二轮请求必须带上该字段。
-
-    这就是 §5.1 给所有涉及工具调用的功能设的那道门：只测"第一步能调工具"不算通过。
-    """
-    first_round = {
-        "id": "cmpl-1",
-        "object": "chat.completion",
-        "created": 0,
-        "model": MODEL_FLASH,
-        "choices": [
-            {
-                "index": 0,
-                "finish_reason": "tool_calls",
-                "message": {
-                    "role": "assistant",
-                    "content": "",
-                    "reasoning_content": "第一步：检索 asyncio 文档",
-                    "tool_calls": [
-                        {
-                            "id": "call_1",
-                            "type": "function",
-                            "function": {"name": "search_docs", "arguments": '{"query": "asyncio"}'},
-                        }
-                    ],
-                },
-            }
-        ],
-        "usage": {
-            "prompt_tokens": 100,
-            "completion_tokens": 20,
-            "total_tokens": 120,
-            "prompt_cache_hit_tokens": 64,
-            "prompt_cache_miss_tokens": 36,
-        },
-    }
-    second_round = {
-        "id": "cmpl-2",
-        "object": "chat.completion",
-        "created": 0,
-        "model": MODEL_FLASH,
-        "choices": [
-            {
-                "index": 0,
-                "finish_reason": "stop",
-                "message": {"role": "assistant", "content": "用 asyncio.gather 并发执行协程。"},
-            }
-        ],
-        "usage": {"prompt_tokens": 200, "completion_tokens": 15, "total_tokens": 215},
-    }
-    respx.post(CHAT_URL).mock(
-        side_effect=[httpx.Response(200, json=first_round), httpx.Response(200, json=second_round)]
-    )
-
-    model = get_chat_model(api_key=TEST_API_KEY).bind_tools(TOOLS)
-    messages = [HumanMessage("asyncio.gather 怎么用")]
-    first_reply = model.invoke(messages)
-    model.invoke(
-        [*messages, first_reply, ToolMessage(content="文档片段：gather 并发执行。", tool_call_id="call_1")]
-    )
-
-    assert len(respx.calls) == 2
-    second_request = json.loads(respx.calls[1].request.content)
-    assistant = next(m for m in second_request["messages"] if m["role"] == "assistant")
-    assert assistant["reasoning_content"] == "第一步：检索 asyncio 文档"
-```
-
-### 4.6 `tests/test_prompt_stability.py`
-
-```python
-"""缓存前缀稳定性守护（§1）：模板渲染必须逐字节可复现。"""
-
-from __future__ import annotations
-
-from langchain_core.messages import HumanMessage
-
-from pyassist.llm.prompts import PROMPT_DIR, load_prompt
-
-# 易变 token：出现在模板里就会击穿前缀缓存，成本涨 50 倍。
-VOLATILE_TOKENS = ("datetime.now", "time.time", "uuid", "random", "timestamp", "today")
-
-
-def test_same_input_renders_byte_identical() -> None:
-    """同一模板、同样输入渲染两次，输出必须逐字节一致。"""
-    prompt = load_prompt("qa")
-    history = [HumanMessage("asyncio.gather 怎么用")]
-    first = prompt.format_messages(history=history, output_language="中文")
-    second = prompt.format_messages(history=history, output_language="中文")
-    assert [m.content for m in first] == [m.content for m in second]
-    assert first[0].content.encode("utf-8") == second[0].content.encode("utf-8")
-
-
-def test_templates_contain_no_volatile_tokens() -> None:
-    """静态扫描：模板里不得出现时间戳 / 随机 id / 随机数 token。"""
-    offenders: list[str] = []
-    for path in sorted(PROMPT_DIR.glob("*.jinja2")):
-        text = path.read_text(encoding="utf-8")
-        hits = [token for token in VOLATILE_TOKENS if token in text]
-        if hits:
-            offenders.append(f"{path.name}: {hits}")
-    assert not offenders, f"模板中出现易变 token：{offenders}"
-```
-
-### 4.7 `tests/test_tracing.py` 与 `tests/test_usage_mapping.py`
-
-```python
-# tests/test_tracing.py —— 分别计价与错峰边界
-def test_cache_hit_and_miss_are_priced_separately() -> None:
-    """命中与未命中必须分别计价：合并成一个 prompt_tokens 会让报表严重失真（§3.1）。"""
-    cost = price_usage(
-        MODEL_FLASH,
-        cached_tokens=1_000_000,
-        uncached_input_tokens=1_000_000,
-        output_tokens=1_000_000,
-        is_off_peak=True,
-    )
-    assert cost == Decimal("0.753")  # 0.003 + 0.15 + 0.60
-
-
-def test_peak_price_is_double_off_peak() -> None:
-    off_peak = price_usage(MODEL_PRO, cached_tokens=0, uncached_input_tokens=1_000_000,
-                           output_tokens=0, is_off_peak=True)
-    peak = price_usage(MODEL_PRO, cached_tokens=0, uncached_input_tokens=1_000_000,
-                       output_tokens=0, is_off_peak=False)
-    assert peak == off_peak * 2
-
-
-@pytest.mark.parametrize(
-    ("moment", "expected_off_peak"),
-    [
-        (datetime(2026, 10, 5, 0, 59, tzinfo=UTC), True),    # 周一，窗口前
-        (datetime(2026, 10, 5, 1, 0, tzinfo=UTC), False),    # 周一，峰值起点（含）
-        (datetime(2026, 10, 5, 4, 0, tzinfo=UTC), True),     # 周一，峰值终点（不含）
-        (datetime(2026, 10, 5, 6, 0, tzinfo=UTC), False),    # 周一，第二个窗口起点
-        (datetime(2026, 10, 5, 10, 0, tzinfo=UTC), True),    # 周一，第二个窗口终点
-        (datetime(2026, 10, 10, 2, 0, tzinfo=UTC), True),    # 周六，全时段半价
-    ],
+from pyassist.agent.checkpointer import open_checkpointer
+from pyassist.db.models import Base
+from pyassist.db.repositories import (
+    count_attempts,
+    create_chat_session,
+    ensure_user,
+    record_attempt,
 )
-def test_is_off_peak_boundaries(moment: datetime, expected_off_peak: bool) -> None:
-    assert is_off_peak(moment) is expected_off_peak
-```
+from pyassist.db.session import create_engine, create_session_factory
 
-```python
-# tests/test_usage_mapping.py —— 缺陷 B 的守护（升级 langchain-deepseek 后先跑这个）
-@respx.mock
-def test_flat_cache_hit_tokens_become_cache_read() -> None:
-    """DeepSeek 返回扁平的 prompt_cache_hit_tokens；langchain_openai 只认
-    prompt_tokens_details.cached_tokens。不归一化，cached_tokens 恒为空。"""
-    respx.post(CHAT_URL).mock(return_value=httpx.Response(200, json=RESPONSE_WITH_FLAT_CACHE_USAGE))
-    message = get_chat_model(api_key=TEST_API_KEY).invoke([HumanMessage("你好")])
+THREAD_ID = "thread-idempotency-1"
+DEDUP_KEY = f"{THREAD_ID}:probe:0"
 
-    assert message.usage_metadata is not None
-    assert message.usage_metadata["input_token_details"]["cache_read"] == 64
 
-    snapshot = extract_usage(message, model_id=MODEL_FLASH, now_utc=datetime(2026, 10, 5, 2, tzinfo=UTC))
-    assert snapshot.cached_tokens == 64
-    assert snapshot.cost_usd == price_usage(
-        MODEL_FLASH, cached_tokens=64, uncached_input_tokens=36, output_tokens=20, is_off_peak=False
+class _ProbeState(TypedDict):
+    passes: int
+
+
+def _build_graph(session_factory: object, *, fail_first: bool) -> tuple[StateGraph, dict[str, int]]:
+    """一个会"第一次失败、第二次成功"的单节点图。
+
+    用 `RetryPolicy` 迫使**同一个节点在同一个 thread 下重跑** —— 这正是 §2 说的
+    "恢复会重跑被中断的节点"的最小可复现形态。
+    """
+    calls = {"n": 0}
+
+    async def probe(state: _ProbeState) -> _ProbeState:
+        calls["n"] += 1
+        async with session_factory() as session:  # type: ignore[operator]
+            await record_attempt(
+                session,
+                idempotency_key=DEDUP_KEY,
+                session_id=THREAD_ID,
+                exercise_id="ex-1",
+                topic="列表",
+                submitted_code="pass",
+                is_passed=True,
+            )
+            await session.commit()
+        if fail_first and calls["n"] == 1:
+            raise RuntimeError("第一次执行故意失败，迫使同节点重跑")
+        return {"passes": state["passes"] + 1}
+
+    builder = StateGraph(_ProbeState)
+    builder.add_node(
+        "probe",
+        probe,
+        # 三个坑（SPEC §1.6）：默认 retry_on 不重试 RuntimeError；默认会真 sleep。
+        retry_policy=RetryPolicy(
+            max_attempts=2, retry_on=RuntimeError, initial_interval=0.0, jitter=False
+        ),
     )
+    builder.add_edge(START, "probe")
+    builder.add_edge("probe", END)
+    return builder, calls
 
 
-@respx.mock
-def test_absent_flat_cache_fields_do_not_break_usage() -> None:
-    """响应里没有扁平缓存字段时，计价照常走全价 miss，不抛异常。"""
+async def test_node_rerun_keeps_business_rows_at_one(tmp_path: Path) -> None:
+    """同一 thread 下节点跑了两次，业务表仍只有一行（去重键生效）。"""
+    url = f"sqlite+aiosqlite:///{(tmp_path / 'app.db').as_posix()}"
+    engine = create_engine(url)
+    async with engine.begin() as conn:
+        await conn.run_sync(Base.metadata.create_all)
+    session_factory = create_session_factory(engine)
+
+    async with session_factory() as session:
+        await ensure_user(session, user_id="u1")
+        await create_chat_session(session, session_id=THREAD_ID, user_id="u1")
+        await session.commit()
+
+    async with open_checkpointer(database_url=url) as saver:
+        builder, calls = _build_graph(session_factory, fail_first=True)
+        graph = builder.compile(checkpointer=saver)
+        # §2：恢复只传 config，不重传 state。
+        await graph.ainvoke({"passes": 0}, {"configurable": {"thread_id": THREAD_ID}})
+
+    assert calls["n"] == 2, "节点必须真的重跑过，否则这个测试是空转"
+
+    async with session_factory() as session:
+        assert await count_attempts(session) == 1
+    await engine.dispose()
 ```
+
+**为什么这个测试是有效的**：`calls["n"] == 2` 断言了重跑**真的发生**（否则测试会因为"节点只跑一次所以只有一行"而假绿）；`count_attempts == 1` 断言了重跑的副作用被去重键吸收。两个断言缺一不可。
+
+### 4.10 `tests/test_contract_guardrails.py`（追加）
+
+沿用该文件的 AST 扫法与"断言信息不回显内容"的安全约定，追加：
+
+| # | 断言 | 手法 |
+|---|---|---|
+| 9 | 检查点类只在 `agent/checkpointer.py` 被引用 | AST：`ast.ImportFrom` 模块前缀 `langgraph.checkpoint`、或 `ast.Call` 名匹配 `{"SqliteSaver", "AsyncSqliteSaver", "PostgresSaver", "AsyncPostgresSaver"}`，排除 `src/pyassist/agent/checkpointer.py` |
+| 10 | Store 类只在 `agent/store.py` 被引用 | 同上，模块前缀 `langgraph.store`，名字 `{"SqliteStore", "AsyncSqliteStore", "PostgresStore", "AsyncPostgresStore"}` |
+| 11 | `create_async_engine` / `create_engine` 只在 `db/session.py` 出现（`migrations/env.py` 除外） | AST：`ast.Call` 名匹配 |
+| 12 | `db/session.py` 里不出现 `sqlite` 字面量（**大小写不敏感**，注释与 docstring 也算） | 文本扫描（§4.1 的设计把方言知识挪去了 `config.py`，这条断言就是那个设计的可执行形式）。§4.2 的代码草案已按此约束写就 —— 它的 docstring 刻意不含该词 |
+| 13 | 裸 SQL 只在 `db/repositories.py`（`migrations/` 除外）：`sqlalchemy.text(` / `exec_driver_sql` | AST |
+
+`MemorySaver` 的断言（原第 6 条）**保持不动** —— 它是阶段一就写下的，本阶段不重复实现。
 
 ---
 
 ## 5. 验收
 
-沿用阶段一的五条命令，加上 ROADMAP 阶段二指定的三件套：
+沿用前两阶段的五条命令，加上 ROADMAP 阶段三指定的两条（`alembic upgrade head` / 两个守护测试）与一条本文件补的漂移探针（`alembic check`）：
 
 ```bash
 uv sync
@@ -997,32 +1220,36 @@ uv run ruff format --check .
 uv run mypy --strict src/pyassist
 uv run pytest
 
-# 阶段二专属
-uv run pytest tests/test_deepseek_reasoning.py tests/test_prompt_stability.py \
-              tests/test_tracing.py tests/test_usage_mapping.py
-
-# 人工步骤（不进 CI）：真机模型名校验
-uv run python -m pyassist.llm.client --check-models
+# 阶段三专属
+rm -f data/app.db && uv run alembic upgrade head    # 从零建库也要通
+uv run alembic check                                 # models 与迁移不漂移
+uv run pytest tests/test_state_ownership.py tests/test_idempotency.py
 ```
 
 ### 验收判据
 
 - [ ] `uv run pytest` 退出码 0（不是 5），全部测试**不碰网络**
-- [ ] **三条回归全绿**：payload 级 / 回填级 / **连续两轮工具调用**（第三条是 §5.1 的门）
-- [ ] 回填级断言的是 `"reasoning_content" in assistant` **且** `== ""` —— 键存在，不是被省略
-- [ ] 模板同输入渲染两次**逐字节一致**；`*.jinja2` 静态扫描无易变 token
-- [ ] 计价：命中与未命中分别计价；峰值恰为错峰的两倍；错峰边界（01:00 / 04:00 / 06:00 / 10:00 / 周六）逐条断言
-- [ ] `usage_metadata.input_token_details["cache_read"]` 能从扁平的 `prompt_cache_hit_tokens` 归一化出来
+- [ ] `alembic upgrade head` 在**删掉 `data/app.db` 之后**仍从零跑通；重复跑第二次不报错（幂等）
+- [ ] `alembic check` 无 diff：`db/models.py` 与迁移描述的是同一套业务表（手写迁移的探针）。LangGraph 的表**不**被报成"多余的表"（`env.py` 的 `include_object` 生效）
+- [ ] 迁移后 `data/app.db` 里**同时**存在业务表（`users`/`sessions`/`exercise_attempts`/`mistakes`/`token_ledger`）与 `checkpoints`/`writes`，**同一个文件**
+- [ ] `make_url(settings.database_url).database` 与**活的检查点连接**（`pragma_database_list`）解析出的路径都等于 `config.DB_PATH`
+- [ ] 从 `src/pyassist` 里 import 不到 `MemorySaver`
+- [ ] `db/models.py` 没有任何 message 形状的表（表名与列形状都查）
+- [ ] 同一 `thread_id` 下节点重跑 2 次，`exercise_attempts` 行数仍为 1
 - [ ] `ruff check` / `ruff format --check` 无 diff；`mypy --strict src/pyassist` 零错误
-- [ ] `src/` 内除 `llm/client.py` 外不出现 `ChatDeepSeek(` / `ChatOpenAI(` / `ChatDeepSeekPatched(`
-- [ ] 未创建 `errors.py`、未创建任何图、未建 token 账本
-- [ ] `--check-models` 人工跑过一次；**结论记进提交信息或 ADR**（见「待定项 3」）
+- [ ] `src/` 内除 `agent/checkpointer.py` 外不出现检查点类的构造；除 `agent/store.py` 外不出现 Store 类的构造
+- [ ] `db/session.py` 内不出现 `sqlite` 字样
+- [ ] 未创建 `errors.py`、`agent/state.py`、任何图、任何 router、任何 service
+- [x] `uv sync` 的锁变化**只有** `greenlet` 与 `psycopg-binary` 两条（§1.4 实施期更正）。原判据"不新增任何需要下载的包 / `uv.lock` 不变"**经实测不成立**，已作废并替换为本条：`pyproject.toml` 新增 `aiosqlite` / `sqlite-vec` / `psycopg[binary,pool]` 三条直接声明 + `sqlalchemy[asyncio]` extra，`uv.lock` 相应新增 `greenlet` / `psycopg-binary`。（`aiosqlite` 另钉 `<0.22`，理由见「待定项 9」复注。）
 
-### 与 ROADMAP 验收的差异（三处，均需知悉）
+### 与 ROADMAP 验收的差异（四条，均需知悉）
 
-1. ROADMAP 列了三个测试文件；本文件加了 `tests/test_usage_mapping.py`（缺陷 B 的守护）与一条契约守护扩展。原因见 §1.3：缓存命中用量丢失是实测发现的、ROADMAP 与 AGENTS 都没记载的缺陷，不修则 §3.1 的 `cached_tokens` 恒为空。
-2. ROADMAP 说"不一致打 `error` 级日志并在 `/health` 暴露"；`/health` 是阶段四的产物，本阶段只把结果存进 `client.get_last_model_check()`，阶段四接管暴露。
-3. ROADMAP 的验收里 `--check-models` 是"真机校验需人工跑一次"；本文件保留该定位并明确**退出码 1（不一致）不算本阶段验收失败** —— 模型名漂移是上游事实，不是集成错误（见「待定项 3」）。
+1. **ROADMAP 写"开发 `SqliteSaver`"，本阶段实现的是 `AsyncSqliteSaver`。** 实测 `SqliteSaver` 是同步类（§1.2 第 1 条），而 §3.4 要求 DB 路径 async、§2 禁止在 async 路由里阻塞事件循环。两类的表结构与库文件完全相同，只是接口同步/异步之别。ROADMAP 的"`SqliteSaver`"应读作"SQLite 的检查点持久化"这个概念。
+2. **ROADMAP 说"`checkpointer.setup()` / `store.setup()` 写进迁移脚本"，本阶段把它们放在 `migrations/env.py` 的迁移事务**之后**，而不是 `versions/0001_init.py` 的 `upgrade()` 里。** 原因：`upgrade()` 还在迁移事务内，此时再开一条连接去建表会与迁移事务抢同一个 SQLite 文件的写锁。两者都属于"迁移脚本"，但只有放在事务后才是安全的。取舍见「待定项 5」。
+3. **ROADMAP 的阶段三验收只有两条命令；本文件补了 `rm -f data/app.db` 前置和 `alembic check`。** 前者：`alembic upgrade head` 在一个已经建过表的库上跑，测不出"从零建库"这条路径，而阶段八的 `docker compose up` 走的正是从零那条。后者：手写迁移最大的风险就是改了 `db/models.py` 忘了同步迁移，`alembic check` 是它的探针 —— 代价只是一条命令，不采纳没道理。
+4. **ROADMAP 说"断言从 `src/pyassist` 里 import 不到 `MemorySaver`"，本文件实现为运行时断言（遍历子模块 `hasattr`），而非只靠 AST 文本扫描。** 两者互补：AST（`test_contract_guardrails.py` 的第 6 条，已有）拦"写进源码"；运行时（§4.8 的最后一条）拦"从别处 import 进来再 re-export"。已有的那条不动。
+
+**Postgres 分支不纳入本阶段验收。** 本机无 PG 实例，`AsyncPostgresSaver` / `AsyncPostgresStore` 分支只保证"导入与签名正确"（`ruff` / `mypy` 会替我们盯着），**未经验证**。照阶段二 `--check-models` 的处理方式：如实标注为人工步骤，不进 CI。
 
 ---
 
@@ -1030,81 +1257,137 @@ uv run python -m pyassist.llm.client --check-models
 
 | 风险 | 触发点 | 缓解 |
 |---|---|---|
-| **补丁写错方向**：把 `reasoning_content` 塞进 `content` 的内容块 | T1 | 基类 `_format_message_content` 会**静默剥掉** `type` 为 `thinking` / `reasoning_content` 的块。必须写成出站 dict 的**顶层键**；T2 断言的就是顶层键 |
-| 对**普通** assistant 消息（无 `tool_calls`）也回写 `reasoning_content`，真机可能拒绝 | T1 / T8 | 契约 §1 原文要求"写回出站 assistant 消息"，故默认全部回写。真机若报错，**收窄为只处理带 `tool_calls` 的消息**并在 `docs/decisions/` 写 ADR（见「待定项 5」） |
-| `payload["messages"]` 与原始消息**对不齐** | T1 | 长度不符时直接返回、不改 payload；不靠索引猜 |
-| `models.list()` 与 `EXPECTED_MODEL_IDS` 不一致 | T3 | **只告警不阻断**。§1 自己就说定价页写的是 `deepseek-flash`，`deepseek-v4-flash` 是旧名 —— 上游改名不该打挂应用 |
-| `models.list()` 端点不存在 / 网络不通 | T3 | `except openai.OpenAIError` 降级为 `error` 日志 + `is_ok=False`，绝不抛到调用方 |
-| `usage_metadata` 的 `cache_read` 键名随 langchain-core 版本变化 | T1 / T5 | 归一化集中在一处；`test_usage_mapping.py` 把行为钉死，升级时会红 |
-| 流式路径漏修（只修了非流式） | T1 | `_convert_chunk_to_generation_chunk` 与 `_create_chat_result` **两个都须 override**。阶段六的 SSE 走流式，漏了要等那时才暴露 |
-| `is_off_peak` 收到本地时间 | T4 | 无时区直接 `raise ValueError`。用本地时区算价格是"看起来对但全错" |
-| 用 `float` 计价产生精度假象 | T4 | 全程 `Decimal`，日志里 `cost_usd` 用 `str()` |
-| **测试里出现已停用模型名** | T2 / T5 | `tests/` 在守护扫描面内（`test_contract_guardrails.py:18`），注释与字符串都要避开 |
-| **补丁阻塞进度**，需要临时关掉思考模式 | T1 | `get_chat_model(thinking=False)` 就是那个逃生门（§1 兜底）。代价是诊断质量下降，**必须**在 `docs/decisions/` 写下决定与恢复计划。它只该在卡住时启用，不该成为默认值 |
-| 贪快把 token 账本 / 熔断一起做了 | T4 | §0「不做」表；账本是阶段三，熔断是阶段八 |
-| 依赖升级后忘了补丁是否还需要 | T1 / 全程 | 两个测试文件就是探针：`test_deepseek_reasoning.py`（缺陷 A）与 `test_usage_mapping.py`（缺陷 B） |
+| **两条连接写同一个 SQLite 文件** → `database is locked` | T2 / T5 | `busy_timeout=30`（`config.build_engine_kwargs`）；`journal_mode=WAL` 由检查点 `setup()` 一次设成库级属性。文档里点明"同一个库"是**同一个文件**、**不是同一条连接** —— 这两件事混淆会导致"共享连接"的错误重构 |
+| **`asyncio.get_running_loop()` 构造约束**：在 import 期或同步上下文造 saver 直接抛 | T5 | 一律经 `open_checkpointer()` / `open_store()`；加守护断言（T7 第 9/10 条）防止有人"顺手"import 一个类就在模块级 new |
+| **Alembic 异步模板与 `asyncio.run` 冲突** | T6 | `env.py` 用同步引擎 + `_SYNC_DRIVERS` 映射（§4.7）；理由写进文件 docstring |
+| **LangGraph 地表与迁移事务抢写锁** | T6 | 建表放在迁移事务提交、连接关闭**之后**（§4.7）；见「待定项 5」 |
+| **`alembic check` 把 LangGraph 的表报成"多余"并要求 DROP** | T6 | `env.py` 的 `include_object` 按前缀过滤 `checkpoint* / writes / store* / vector*`（§4.7）。**这条不加，`check` 会给出一个"删掉全部对话历史"的假告警** |
+| **模块级 import Postgres 类 → 没 libpq 的机器连 SQLite 与全部测试一起崩** | T5 | 两个构造点的 Postgres 类一律**函数内 import**（§4.5 / §4.6）；SQLite 类留模块级（开发主路径，早失败更早发现） |
+| **手写迁移与 `db/models.py` 漂移**（改了模型忘了改迁移） | T3 / T6 | `alembic check` 进验收（§5）；这是手写迁移的代价，用一条命令换回确定性 |
+| **`session.rollback()` 连带回滚** | T4 | `record_*` 的 docstring 写明"一次业务操作一个 Session"；§4.9 的测试实际跑过这条路径 |
+| **Postgres 分支不可验** | T5 | 只保证导入/签名正确，验收明确排除；实现与 SQLite 分支对称，将来真机验证只需换 `DATABASE_URL` |
+| **`sqlite-vec` 是"别人的依赖"** | T5 / 全程 | §1.3 记录这条耦合。本阶段不新增声明（§1.4 已核实是硬依赖），但若将来移除 `langgraph-checkpoint-sqlite`，`agent/store.py` 会先炸 |
+| **`migrations/env.py` 会被 ruff 检查**（`extend-exclude` 只排除 `migrations/versions`） | T6 | env.py 保持最小，删掉 Alembic 的 `fileConfig` 样板；`0001_init.py` 在 `versions/` 内不受 ruff 约束 |
+| **测试污染真实 `data/app.db`** | T7 | 除 `test_state_ownership.py` 的两条只读断言外，一律用 `tmp_path`（§4.8 / §4.9） |
+| **方言知识散落**，`db/session.py` 变成第二个配置源 | T1 / T2 | 方言知识集中在 `config.py`，`db/session.py` 零方言；T7 第 12 条断言把它钉死。取舍见「待定项 2」 |
+| **在 `db/models.py` 里"顺手"加一张 `messages` 表** | T3 | §4.8 的表名 + 列形状双查；ROADMAP 原文点名"没有 `messages` 表" |
+| **贪快把 Token 累计 / 熔断一起做了** | T4 | §0「不做」表；账本只建表与写函数，不接请求路径 |
+| **在阶段三就开始拼图** | T7 | §0「不做」表 + §2 单点所有权；§4.9 的图明确写在测试文件内，且注释说明它是夹具不是产品图 |
 
 ---
 
 ## 7. 待定项
 
-不阻塞阶段二动工，但需要人拍板。
+不阻塞阶段三动工，但需要人拍板。
 
 ### 1. `SPEC.md` 的归档策略（本文件已按推荐执行）
 
-`SPEC.md` 原本是阶段一的规格（标题即"阶段一 · 工程底座 · 实施规格"）。本次把它重写为阶段二，阶段一原文**逐行一致**地归档到 `docs/specs/阶段一-工程底座.md`。
+`SPEC.md` 原为阶段二规格。本次重写为阶段三，阶段二原文**逐行一致**地归档到 `docs/specs/阶段二-LLM基座.md`（与阶段一的归档件同处一目录、同保留原标题）。
 
-- **推荐（已执行）**：归档而非覆盖。理由：`config.py`（"§4 T4"、"待定项 4"）与 `pyproject.toml`（"§5.6"、"§5.1 的疏漏"）有 4 处反向引用，覆盖会让它们悬空。
-- 需要人确认：是否接受 `docs/specs/` 这个新目录；若希望 SPEC 逐阶段累积在同一文件里，改回来只是移动文件。
-- **附带项**：那 4 处引用现在指向归档件。是否把它们改写成 `docs/specs/阶段一-工程底座.md §4 T4` 这类显式路径，属于代码注释改动，**本阶段未做**，请拍板。
+- **推荐（已执行）**：归档而非覆盖。理由同阶段二：归档件是既有引用的解析目标。
+- 需人确认：`docs/specs/` 是否继续逐阶段累积（现在是三个文件：阶段一、阶段二、`SPEC.md`）。
+- **附带项**：`config.py:95` 与 `docker-compose.yml` 里有指向"SPEC 待定项"的注释，归档后这些编号指向的是**新** SPEC。本阶段未改这些注释（属代码注释改动），请拍板是否要改写成显式路径。
 
-### 2. 缺 API key 时抛什么（T3 会立刻遇到）
+### 2. 方言知识放 `config.py` 还是 `db/session.py`（T1/T2 立刻会遇到）
 
-`errors.py` 按 ROADMAP 是阶段四的产物。
+ROADMAP 要求 `db/session.py`"不得出现方言分支"，但 SQLite 的连接级 `busy_timeout` 客观存在。
 
-- **推荐**：本阶段抛 `RuntimeError`，**不留 TODO 占位**，阶段四把 `client.py` 里的这一处换成 `errors.ConfigError`，由 `api/errors.py` 映射成 500。
-- 备选：提前在阶段二建 `errors.py`（只放异常层级，不含映射）。代价是阶段四的"契约冻结"要在半成品上做，且阶段一的 SPEC 明确把 `errors.py` 划给阶段四。
+- **推荐（本文件采用）**：方言知识集中到 `config.py` 的三个纯派生函数（`build_engine_kwargs` / `resolve_sqlite_path` / `to_psycopg_conninfo`），`db/session.py` 只剩装配，那条要求变成可断言的事实（T7 第 12 条）。
+- 备选：允许 `db/session.py` 里有一处显式标注的 SQLite 专用行，并在注释里说明"这不是业务逻辑的方言分支"。**代价**：那条 ROADMAP 要求退回成约定，加不了机器断言。
+- 备选二：新开 `db/urls.py` 作为"URL → 连接串"的唯一所有者（是合法的单点所有权，但多一个 ROADMAP 未列的文件）。
+- 需人确认：`config.py` 里放**函数**是否触犯阶段一 SPEC §5.2 那句"不在 config.py 里写业务函数"。本文件的立场：这三个是 `settings.database_url` 的纯派生，属于"把配置读对"，不是业务。
 
-### 3. `/health` 在模型名校验不一致 / 缺 key 时是硬失败还是警告
+### 3. `sessions.id` 是否就用作 LangGraph 的 `thread_id`
 
-- **推荐**：**警告**。模型名正在漂移（§1 原文），硬失败会让一次上游改名打挂部署；缺 key 则是本地开发常态，硬失败会让 `docker compose up` 在没配 key 时起不来。
-- 阶段四落地时需一并定：`/health` 返回 200 但带 `data.status="degraded"`，还是 503。ROADMAP 只写了"暴露"，没写状态码。
+- **推荐（本文件采用）**：是。§2 原文就是 `thread_id = <会话 id>`；再立一个 `thread_id` 列会让同一件事有两个 id。
+- 备选：另立 `thread_id` 列。若将来需要"一个会话换一个图线程"（如重新开一段上下文）则备选更合适 —— 那是产品决定，不是技术决定。
 
-### 4. 「缓存命中用量归一化」是否算阶段二范围（本文件已按推荐纳入）
+### 4. 是否把 Postgres 分支推迟到阶段八
 
-- **推荐（已纳入）**：算。理由：不做则 §3.1 的 `usage.cached_tokens` 恒为空，阶段四的信封与成本报表从上线第一天就是错的，而阶段八的 `/stats` 还要基于它做熔断。
-- 备选：放到阶段四，在信封组装处读 `response_metadata["token_usage"]` 兜底。**不推荐** —— 会产生两条取数路径（`usage_metadata` 与 `response_metadata`），互相矛盾时无从判断谁对。
-- 需要人确认：把这项写进 `ROADMAP.md` 阶段二的产出清单（现在它只在本文件里）。
+- **推荐（本文件采用）**：本阶段实现，但标注"未验证"。理由：两个分支对称、代码量小，且 §2 要求"检查点指向与 `db/session.py` 相同的库"这条必须**现在**就成立；推迟实现等于把 `DATABASE_URL` 切换这件事留到部署前才做，那时才发现问题更贵。
+- 备选：本阶段只实现 SQLite，PG 分支留空（`raise NotImplementedError`），阶段八补。**代价**：留了一个空实现 —— 正是 §0 说的"平行实现的种子"。
 
-### 5. 普通 assistant 消息是否也回写 `reasoning_content`
+### 5. `AsyncSqliteSaver.setup()` 的 docstring 说"不要直接调"，而 ROADMAP 要求写进迁移
 
-契约 §1 说"把 `additional_kwargs["reasoning_content"]` 写回出站 assistant 消息"，未区分是否带 `tool_calls`。
+`AsyncSqliteSaver.setup()` 的 docstring 是 *"It is called automatically when needed and should not be called directly by the user."*；`AsyncPostgresSaver.setup()` 的 docstring 恰好相反：*"It MUST be called directly by the user the first time"*。
 
-- **推荐**：按契约原文全部回写（本文件 §4.1 即如此）。
-- 若真机对**非** tool_calls 的 assistant 消息报 400，收窄为只处理带 `tool_calls` 的消息，并写 ADR 到 `docs/decisions/`。这条只能**真机实测**，mock 测不出来。
+- **推荐（本文件采用）**：迁移里调一次。理由：`setup()` 幂等（`is_setup` + `IF NOT EXISTS`），"上游会懒调用"与"迁移里先建好"并不冲突；而 PG 侧**必须**显式调，SQLite 侧照同一套流程走才对称。
+- 需人确认：接受这个读法。若不接受，退路是 SQLite 侧完全依赖懒调用、只在 PG 侧显式 `setup()` —— 代价是"表什么时候建的"变成隐式行为。
 
-### 6. `DEEPSEEK_API_BASE_URL` 不带 `/v1` 是否有意
+### 6. `.env` 里若已写死同步驱动的 `DATABASE_URL`
 
-`config.py` 的值是 `https://api.deepseek.com`，而 `langchain-deepseek` 的 `DEFAULT_API_BASE` 是 `https://api.deepseek.com/v1`。
+`.env` 已存在（含真实 key，被 git 忽略）。若其中设置了 `DATABASE_URL=sqlite+pysqlite:///...`，它会**覆盖** `config.py` 的新默认值，阶段三的异步引擎会直接报错。
 
-- **推荐**：保持现状（与 DeepSeek 官方 openai-SDK 示例一致），`client.py` 显式传 `base_url` 覆盖库默认值。
-- 需人工跑一次 `--check-models` 确认端点可用；若 404，改成带 `/v1` 的形式并在此处记一笔。
+- **推荐**：实施 T1 时检查 `.env` 的 `DATABASE_URL` 一行（**只看变量是否存在与取值形态，不回显内容**），若存在则改驱动段为 `sqlite+aiosqlite`。
+- 需人确认：这是本机私改，`scripts/check_secrets.py` 与守护测试都拦不到它（`.env` 的值不参与断言）。
+
+### 7. `token_ledger` 本阶段是否写入
+
+- **推荐（本文件采用）**：只建表 + 提供 `append_token_usage()`，**不在任何请求路径调用**（本阶段还没有请求路径）。阶段四的信封与阶段八的 `/stats` 才接。
+- 需人确认：是否希望本阶段就补一个"把 `UsageSnapshot` 落库"的小工具函数。**不推荐** —— 阶段三没有调用方，那会是一个没人跑过的函数。
+
+### 8. `sqlite-vec` 是否需要显式加载扩展
+
+`AsyncSqliteStore` 在 `index=None` 时**不**建向量表，也不加载扩展；`sqlite_vec` 只在 import 期被 `langgraph.store.sqlite.base` 引用到。
+
+- **推荐**：本阶段不加载扩展、不配 index。向量检索所需的 `index=SqliteIndexConfig(embeddings=...)` 是阶段八记忆功能的缝，等阶段五的向量模型选型定了一起做。
+- 需人确认：接受"阶段三的 Store 只能做 KV 记忆、还不能做语义检索"。
+
+### 9. 三个传递依赖是否提升为直接声明（`pyproject.toml`）
+
+`aiosqlite` / `sqlite-vec` / `psycopg`(+`pool`) 都已装、都在 `uv.lock` 里，且都是
+`langgraph-checkpoint-sqlite` / `-postgres` 的硬 `Requires-Dist`（§1.4 已逐个核实）——
+所以**本阶段不声明也能跑通，验收不受影响**。
+
+但这三件是"我们自己的代码直接需要"的东西：`db/session.py` 用 `sqlite+aiosqlite` 方言、
+`agent/store.py` 经 `langgraph.store.sqlite` 硬依赖 `sqlite-vec`、生产分支直接调 psycopg。
+由别人替我们声明，意味着上游哪天换实现，我们不会得到解析错误，只会静默崩。
+
+- **推荐（已采纳并实施）**：提升为 `[project].dependencies` 里的直接声明（`aiosqlite>=0.20,<0.22`、`sqlite-vec>=0.1.6,<1.0`、`psycopg[binary,pool]>=3.2,<4.0`）。注意**分发名是 `sqlite-vec`（短横线），import 名是 `sqlite_vec`（下划线）**。
+
+  **实施后复注（实测，与原文三处不符，均如实记录）**：
+  1. 原文"`uv sync` 应**不新增锁条目**"**不成立**。实际新增两条，都不是"版本区间与现状不符"，而是被漏掉的**真依赖**：`greenlet`（来自 `sqlalchemy[asyncio]` 的 extra，`sqlalchemy.ext.asyncio` 的 import 硬前提）与 `psycopg-binary`（来自上面这条 `psycopg[binary,pool]` 自己的 `[binary]` extra）。见 §1.4 的更正表。
+  2. `aiosqlite` 的上界从原建议的 `<1.0` 收紧为 **`<0.22`**，且是**必须**的：0.22 起 `Connection` 不再继承 `threading.Thread`，`is_alive()` 消失，而 `langgraph-checkpoint-sqlite` 2.0.11 的 `AsyncSqliteSaver.setup()` 仍在调它（该上游把 `aiosqlite>=0.20` 声明成不带上下界，是个漏洞）。不钉上界，`graph.ainvoke` 首次懒 setup 即 `AttributeError` —— 本阶段实施时实际踩到。这不是"放宽区间"，是加了一条**兼容性上界**；上游修好后可解除。
+  3. `sqlalchemy` 由裸声明改为 **`sqlalchemy[asyncio]`**（即第 1 点的 greenlet）。
+- 备选（本文件当前默认）：一行不改，只把耦合写进文档（§1.3 / §1.4）。
+- 需人确认：是否现在就把依赖面收紧。**代价很不对称** —— 三条声明 vs 一个可能静默崩的上游变更。
+
+### 10. SQLite 是否开启 `PRAGMA foreign_keys=ON`
+
+SQLite **默认不校验外键**，Postgres 校验。不开的话，"先写子行后写父行"在本机跑得过、
+到了生产才炸 —— 典型的 dev/prod 分叉。
+
+- **推荐**：开启，与 PG 对齐。做法与 §4.1 的方言数据一致：`config` 提供 `connect_pragmas_for(url)`（SQLite 返回 `("PRAGMA foreign_keys=ON",)`，PG 返回空元组），`db/session.py` 只 `for` 一遍 —— 仍是零分支、零方言字样，§4.10 第 12 条断言不受影响。
+- 代价：测试必须先落父行。§4.9 的 `test_idempotency.py` **已经**先建了 `users` / `sessions`，不受影响。
+- 备选：不开，接受分叉。
+- 注：WAL **不受这条影响** —— 它是库文件级持久属性，由检查点 `setup()` 设一次即可（§4.1）。
+- 需人确认：把"FK 约束真的生效"加进 §4.8 的断言（`PRAGMA foreign_keys` 读回来必须是 `1`）。
+
+### 11. SQLite 丢 `tzinfo` 要不要在 ORM 层补回来
+
+`DateTime(timezone=True)` 在把 SQLite 只当存储时读回来是 **naive** datetime（SQLite 没有时区类型），PG 上是真 `timestamptz`。
+
+- **推荐（本文件当前默认）**：不加工。写入端统一 `datetime.now(UTC)`；读取端的归一化（补 tzinfo）交给阶段四的序列化层 —— 它本来就负责把领域对象变成 JSON，那是唯一该关心"外部看到的字符串长什么样"的地方。在 ORM 层再补一次会造出第二套时间语义。
+- 备选：一个 `UTCDateTime` TypeDecorator（bind 时强制 UTC、result 时补 tzinfo），把差异收在 `db/models.py` 内。
+- 需人确认：阶段四的序列化层是否接受"从库读出来的时间可能是 naive"，并负责归一化。
 
 ---
 
 ## 8. 为后续阶段预留的接口
 
-阶段二结束时，下列"缝"必须已经存在，否则后续阶段会以错误的方式重造它们：
+阶段三结束时，下列"缝"必须已经存在，否则后续阶段会以错误的方式重造它们：
 
-| 缝 | 阶段二提供 | 被谁消费 |
+| 缝 | 阶段三提供 | 被谁消费 |
 |---|---|---|
-| 取模型 | `llm.client.get_chat_model(tier=..., thinking=...)` | 阶段六/七/八的**所有**图与 service |
-| 修 `reasoning_content` | `llm.deepseek_chat.ChatDeepSeekPatched` | 全部经 `get_chat_model()` 拿到，无人直接构造 |
-| 缓存命中用量 | `usage_metadata.input_token_details["cache_read"]`（已归一化） | 阶段四的 `meta.usage.cached_tokens` |
-| 计价 | `llm.tracing.extract_usage()` / `price_usage()` / `is_off_peak()` | 阶段四的信封 `meta.usage`、阶段八的熔断 |
-| 用量快照 | `llm.tracing.UsageSnapshot`（字段名 = 信封字段名） | 阶段四 `api/schemas.py` 直接序列化 |
-| 模型名校验结果 | `llm.client.get_last_model_check()` | 阶段四的 `/health` |
-| Prompt 加载 | `llm.prompts.load_prompt(name)` | 阶段六/七/八的 `diagnose.jinja2` 等新模板 |
-| 用量打点 | `llm.tracing.log_llm_response()` | 阶段六起的每个 LLM 节点（§3.5 的 `llm.response`） |
+| 检查点 | `agent.checkpointer.open_checkpointer()` / `setup_checkpointer()` | 阶段四的 FastAPI `lifespan`、阶段六/七/八的每张图 `compile(checkpointer=...)` |
+| 长期记忆 | `agent.store.open_store()` / `setup_store()` | 阶段八 `services/memory.py`（持久化一律经它，不另开向量库） |
+| 业务读写 | `db.repositories.*`（唯一 SQL 出口，写入带 `idempotency_key`） | 阶段四/六/七/八 的 service 与图节点 |
+| 引擎与 Session | `db.session.create_engine()` / `create_session_factory()` / `open_session()` | 阶段四的依赖注入 |
+| 会话身份 | `sessions.id` == LangGraph `thread_id` | 阶段四/六（`config={"configurable": {"thread_id": ...}}`） |
+| Token 账本 | `token_ledger` 表；列名 == `llm.tracing.UsageSnapshot` == §3.1 `meta.usage` | 阶段四信封的 `usage`、阶段八 `/stats` 与单日熔断 |
+| 路径常量 | `config.DB_PATH`（唯一） | 全部需要"同一个库"的断言 |
+| 迁移 | `alembic upgrade head` 一次建齐业务表 + LangGraph 表（幂等，可重跑） | 阶段八 `docker compose up` 的从零建库 |
+| 表结构漂移探针 | `alembic check`（`env.py` 的 `include_object` 已把 LangGraph 的表排除在外） | 每个后续阶段改完 `db/models.py` 后复跑 |
+| 幂等模式 | `idempotency_key` UNIQUE + `record_*` 返回 `bool` | 阶段七的 `sandbox_tools.py`（检查点膨胀截断处的同款模式） |
 
-阶段二**不**为后续阶段留任何空函数、空类或 TODO 占位 —— 那些是平行实现的种子。缝只以"唯一入口 + 已归一化的数据 + 守护测试"的形式存在。
+阶段三**不**为后续阶段留任何空函数、空类或 TODO 占位 —— 那些是平行实现的种子。缝只以"唯一入口 + 已归一化的数据 + 守护测试"的形式存在。

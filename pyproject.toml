@@ -16,6 +16,20 @@ dependencies = [
   # 检查点（阶段三）
   "langgraph-checkpoint-sqlite>=2.0,<3.0",
   "langgraph-checkpoint-postgres>=2.0,<3.0",
+  # 持久化的驱动与扩展（阶段三）。这三件是我们**自己的代码直接依赖**的东西：
+  # db/session.py 的 sqlite+aiosqlite 方言、agent/store.py 经 langgraph.store.sqlite
+  # 对 sqlite-vec 的模块级硬导入、生产分支对 psycopg 的直接调用。它们恰好也被上面
+  # 两个包声明为 Requires-Dist —— 由别人替我们声明，上游哪天换实现时不会有依赖解析
+  # 错误，只会静默崩。故提升为直接声明（SPEC 待定项 9）。
+  # 上界 <0.22 是**兼容性钉**，不是随意的：aiosqlite 0.22 起不再继承 threading.Thread，
+  # 于是 Connection.is_alive() 消失；而 langgraph-checkpoint-sqlite 2.0.11 的
+  # AsyncSqliteSaver.setup() 仍然调它（上游声明 aiosqlite>=0.20 时不带上界，是个漏洞）。
+  # 升到 0.22 会让 `graph.ainvoke` 在首次懒 setup 时 AttributeError。见 SPEC 待定项 9 复注。
+  "aiosqlite>=0.20,<0.22",
+  # 注意：分发名是 sqlite-vec（短横线），import 名是 sqlite_vec（下划线）
+  "sqlite-vec>=0.1.6,<1.0",
+  # [binary] 在 Windows 上捆绑 libpq；[pool] 提供 AsyncConnectionPool
+  "psycopg[binary,pool]>=3.2,<4.0",
   # LLM 传输：仅启动时模型名校验用，业务代码不得直调（§2）
   "openai>=1.50,<2.0",
   # API（阶段四 / 六）
@@ -26,7 +40,9 @@ dependencies = [
   # 数据（阶段三 / 五）
   "pydantic>=2.9,<3.0",
   "pydantic-settings>=2.4,<3.0",
-  "sqlalchemy>=2.0,<3.0",
+  # [asyncio] 带来 greenlet —— sqlalchemy.ext.asyncio 的硬运行时前提（阶段三 db/session.py）。
+  # 这不是"顺手加的 extra"：没有它，create_async_engine 在 import 期就 ImportError。
+  "sqlalchemy[asyncio]>=2.0,<3.0",
   "alembic>=1.13",
   "chromadb>=0.5",
   # 通用（阶段一起就在用）
