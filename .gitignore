@@ -77,7 +77,7 @@ ENV/
 env/
 env.bak/
 venv.bak/
-.python-version
+# 注意：.python-version 必须提交（SPEC §3 / T6），uv 靠它固定解释器
 
 # 测试 / 覆盖率
 .pytest_cache/
@@ -130,7 +130,14 @@ $RECYCLE.BIN/
 logs/
 *.sqlite3
 *.db
-data/
+
+# data/ 整个目录是运行产物，但目录本身要存在（SPEC §5.4）。
+# 陷阱：写 `data/` 会把目录一起排除，git 不再往下看，
+# 后面的 `!...gitkeep` 就全失效了。必须先用 `!data/**/` 把目录放回来。
+data/**
+!data/**/
+!data/**/.gitkeep
+
 output/
 tmp/
 .cache/

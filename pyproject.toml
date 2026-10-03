@@ -1,0 +1,106 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pyassist"
+version = "0.1.0"
+description = "Python AI 学习助手：文档问答 / 错误诊断 / 练习批改 / 学习路径"
+requires-python = ">=3.12"
+# readme 暂不声明：README.md 是阶段八产物，此处声明会让构建失败
+dependencies = [
+  # Agent 编排（阶段二起）
+  "langgraph>=1.1,<2.0",
+  "langchain-core>=1.3,<2.0",
+  "langchain-deepseek>=1.0",
+  # 检查点（阶段三）
+  "langgraph-checkpoint-sqlite>=2.0,<3.0",
+  "langgraph-checkpoint-postgres>=2.0,<3.0",
+  # LLM 传输：仅启动时模型名校验用，业务代码不得直调（§2）
+  "openai>=1.50,<2.0",
+  # API（阶段四 / 六）
+  "fastapi>=0.115,<1.0",
+  "uvicorn[standard]>=0.30",
+  "sse-starlette>=2.1",
+  "slowapi>=0.1.9",
+  # 数据（阶段三 / 五）
+  "pydantic>=2.9,<3.0",
+  "pydantic-settings>=2.4,<3.0",
+  "sqlalchemy>=2.0,<3.0",
+  "alembic>=1.13",
+  "chromadb>=0.5",
+  # 通用（阶段一起就在用）
+  "jinja2>=3.1",
+  "structlog>=24.1",
+  "httpx>=0.27",
+  "python-dotenv>=1.0",
+  "docker>=7.1",
+  # 前端（阶段八）
+  "streamlit>=1.57",
+]
+
+[dependency-groups]
+dev = [
+  "pytest>=8",
+  "pytest-asyncio>=0.24",
+  "respx>=0.21",
+  "ruff>=0.6",
+  "mypy>=1.11",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pyassist"]
+
+# ---------- lint ----------
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+# data / alembic 自动生成：运行产物
+# *.md：ruff 0.16 会把 Markdown 代码块里的 Python 一并格式化 —— 那会改写 SPEC.md 等契约
+#   文档的示例代码。文档不是代码，排除。（契约也要求文档不进任何自动闸门，见 SPEC §5.6）
+extend-exclude = ["data", "migrations/versions", "*.md"]
+
+[tool.ruff.lint]
+select = [
+  "E", "W",     # pycodestyle
+  "F",          # pyflakes
+  "I",          # import 排序
+  "N",          # 命名规范（§3.3）
+  "UP",         # pyupgrade，锁 3.12 语法
+  "B",          # bugbear
+  "A",          # 内建名遮蔽
+  "C4",         # comprehension
+  "SIM",        # 化简
+  "PT",         # pytest 风格
+  "RUF",        # ruff 自有规则
+  "ASYNC",      # 异步陷阱（阶段六的流式铁律靠它兜底）
+  "S",          # bandit：exec/eval/subprocess 等（§4 禁区）
+]
+
+# RUF001/002/003 = "ambiguous unicode character"（全角括号、逗号、冒号等）。
+# 本项目注释与文案为中文，全角标点是正常书写，这三条只会产生噪音。
+# 这是 SPEC §5.1 的疏漏：它一边要求中文 docstring，一边开着 RUF 全集。
+ignore = ["RUF001", "RUF002", "RUF003"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/**" = ["S101"]        # 测试里 assert 是本体
+"experiments/**" = ["S", "T20"]   # 一次性实验：允许 print、允许宽松（§3.5）
+"scripts/**" = ["S607"]      # 提交钩子脚本，用裸 "git" 便于跨机器复用
+
+# ---------- 类型 ----------
+[tool.mypy]
+python_version = "3.12"
+strict = true
+mypy_path = "src"
+packages = ["pyassist"]
+plugins = ["pydantic.mypy"]
+
+# ---------- 测试 ----------
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+addopts = "-q --strict-markers --strict-config"
+markers = [
+  "docker: 需要真实 Docker 守护进程（阶段七）",
+]

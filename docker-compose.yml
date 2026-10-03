@@ -1,0 +1,52 @@
+# 阶段一骨架：三件套服务定义与 sandbox 的 profiles 先就位。
+# 真正的 Dockerfile 由后续阶段补（api 阶段四、sandbox 阶段七、web 阶段八）。
+#
+# 不要加顶层 `version:` 字段 —— Compose v2+ 已移除此字段。
+# 验证：docker compose config   （默认 `up` 不会启动 sandbox，因其带 profiles）
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: Dockerfile.api
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}
+      DEEPSEEK_API_BASE_URL: ${DEEPSEEK_API_BASE_URL:-https://api.deepseek.com}
+      DATABASE_URL: ${DATABASE_URL:-sqlite+pysqlite:///data/app.db}
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      LOG_JSON: ${LOG_JSON:-true}
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./data:/app/data
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile.web
+    environment:
+      # 前端只经 HTTP 说话，不得 import pyassist（§2）
+      PYASSIST_API_BASE_URL: http://api:8000
+    ports:
+      - "8501:8501"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+  # 执行用户代码的唯一安全边界（§4）。阶段七补 Dockerfile.sandbox。
+  # profiles 让它默认挂起：`docker compose up` 不会启动，需 `docker compose --profile sandbox up`。
+  sandbox:
+    build:
+      context: .
+      dockerfile: src/pyassist/sandbox/Dockerfile.sandbox
+    profiles:
+      - sandbox
+    # 硬边界：无网络、只读根文件系统、非 root、资源上限（§5.3）
+    network_mode: none
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 512m
+    cpus: 1.0
+    restart: "no"

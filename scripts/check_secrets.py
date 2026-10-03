@@ -39,7 +39,9 @@ PATTERNS: list[tuple[str, re.Pattern[str]]] = [
 ]
 
 # 允许的占位值：命中这些不算泄密
-PLACEHOLDER = re.compile(r"(?i)(xxx+|your[_-]?|example|placeholder|changeme|<[^>]+>|\$\{|\{\{|os\.environ|getenv)")
+PLACEHOLDER = re.compile(
+    r"(?i)(xxx+|your[_-]?|example|placeholder|changeme|<[^>]+>|\$\{|\{\{|os\.environ|getenv)"
+)
 
 # 不扫描的路径片段
 SKIP_PARTS = ("scripts/check_secrets.py", ".env.example", ".env.template", ".gitignore")
@@ -49,11 +51,15 @@ def staged_files() -> list[Path]:
     """返回本次提交涉及的文件（暂存区 + 新增但未跟踪的文件）。"""
     out = subprocess.run(
         ["git", "diff", "--cached", "--name-only", "--diff-filter=ACMR"],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout
     untracked = subprocess.run(
         ["git", "ls-files", "--others", "--exclude-standard"],
-        capture_output=True, text=True, check=False,
+        capture_output=True,
+        text=True,
+        check=False,
     ).stdout
     names = {line.strip() for line in (out + "\n" + untracked).splitlines() if line.strip()}
     return [Path(n) for n in sorted(names)]
@@ -61,9 +67,10 @@ def staged_files() -> list[Path]:
 
 def scan(path: Path) -> list[str]:
     problems: list[str] = []
-    name = path.as_posix()
 
-    if path.name in FORBIDDEN_NAMES or path.name.startswith(".env") and path.name != ".env.example":
+    if path.name in FORBIDDEN_NAMES or (
+        path.name.startswith(".env") and path.name != ".env.example"
+    ):
         problems.append("敏感文件本身不应提交")
         return problems
 
@@ -81,6 +88,7 @@ def scan(path: Path) -> list[str]:
                 shown = match.group(0)[:40]
                 problems.append(f"第 {lineno} 行疑似{label}：{shown}…")
     return problems
+
 
 def main() -> int:
     # Windows 控制台默认 GBK，中文提示会乱码
