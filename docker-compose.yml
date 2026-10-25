@@ -1,5 +1,5 @@
-# 阶段一骨架：三件套服务定义与 sandbox 的 profiles 先就位。
-# 真正的 Dockerfile 由后续阶段补（api 阶段四、sandbox 阶段七、web 阶段八）。
+# 开发编排。与 deploy/prod.compose.yml 保持**同形**（SPEC §5.16）：
+# 同一份镜像、同一组卷、同样挂 docker.sock，差别只在端口直接暴露、没有 Caddy。
 #
 # 不要加顶层 `version:` 字段 —— Compose v2+ 已移除此字段。
 # 验证：docker compose config   （默认 `up` 不会启动 sandbox，因其带 profiles）
@@ -16,10 +16,21 @@ services:
       DATABASE_URL: ${DATABASE_URL:-sqlite+aiosqlite:////app/data/app.db}
       LOG_LEVEL: ${LOG_LEVEL:-INFO}
       LOG_JSON: ${LOG_JSON:-true}
+      # 留空 = config.DEFAULT_DAILY_TOKEN_LIMIT；0 = 关闭（仅本地调试）。
+      DAILY_TOKEN_LIMIT: ${DAILY_TOKEN_LIMIT:-}
     ports:
       - "8000:8000"
     volumes:
       - ./data:/app/data
+      # 模型权重单列一卷：重建向量库不必重下 bge-m3。
+      - ./data/hf:/app/data/hf
+      # 沙箱容器由 api 经宿主 daemon 创建（用户代码不在 api 容器里执行）。
+      # 这与生产同形；没有 Docker 的机器上，诊断/练习会以 sandbox_ok=false 降级。
+      - /var/run/docker.sock:/var/run/docker.sock
+    # socket 通常属 root:docker(660)，补上宿主 docker 组 GID 非 root 才连得上：
+    #   DOCKER_GID=$(stat -c '%g' /var/run/docker.sock) docker compose up
+    group_add:
+      - "${DOCKER_GID:-0}"
     restart: unless-stopped
 
   web:
@@ -32,7 +43,10 @@ services:
     ports:
       - "8501:8501"
     depends_on:
-      - api
+      api:
+        # 等 /health 真正可用再起前端：否则首屏必然显示"API 不可用"，
+        # 用户以为坏了，其实只是 bge-m3 还在加载。
+        condition: service_healthy
     restart: unless-stopped
 
   # 执行用户代码的唯一安全边界（§4）。阶段七补 Dockerfile.sandbox。
@@ -41,6 +55,9 @@ services:
     build:
       context: .
       dockerfile: src/pyassist/sandbox/Dockerfile.sandbox
+    # tag 必须与 config.SANDBOX_IMAGE 一字不差：runner 用 `images.get("pyassist-sandbox:1")`
+    # 做启动检查，compose 这里写成别的 tag，宿主上就会有两份镜像、其中一份永远没被用到。
+    image: pyassist-sandbox:1
     profiles:
       - sandbox
     # 硬边界：无网络、只读根文件系统、非 root、资源上限（§5.3）

@@ -1,0 +1,32 @@
+# 构建上下文越小，构建越快，也越不容易把密钥/语料打进镜像层。
+# 镜像只需要 pyproject.toml、uv.lock、src/（api）、frontend/（web），
+# 以及部署手册里要 exec 的 `scripts/prune_threads.py`。
+
+.git
+.gitignore
+.venv
+.env
+.env.*
+!.env.example
+
+data
+tests
+experiments
+docs
+deploy
+migrations
+scripts/*
+# 保留一个文件会让父目录进入上下文；用 `scripts/*` 而不是 `scripts`，
+# 否则"父目录被排除后子文件无法再包含"的规则会让下面这行失效。
+!scripts/prune_threads.py
+
+.mypy_cache
+.pytest_cache
+.ruff_cache
+**/__pycache__
+*.pyc
+
+*.md
+docker-compose.yml
+Dockerfile.api
+Dockerfile.web

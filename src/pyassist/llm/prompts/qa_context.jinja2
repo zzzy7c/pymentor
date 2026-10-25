@@ -1,0 +1,11 @@
+以下是本轮检索到的 Python 官方文档片段。回答只能依据这些片段。
+
+{% for citation in citations %}
+[{{ citation.index }}] {{ citation.title }}{% if citation.section %} — {{ citation.section }}{% endif %}
+{{ citation.snippet }}
+{% endfor %}
+
+规则：引用片段时在句末标注对应编号，例如"（见 [1]）"。
+只标注上面真实存在的编号；没有片段支撑的结论必须删除，不要补编号。
+
+问题：{{ question }}

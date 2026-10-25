@@ -45,3 +45,19 @@ async def open_session(engine: AsyncEngine) -> AsyncIterator[AsyncSession]:
     factory = create_session_factory(engine)
     async with factory() as session:
         yield session
+
+
+@asynccontextmanager
+async def open_engine(database_url: str | None = None) -> AsyncIterator[AsyncEngine]:
+    """建一个引擎并在退出时 dispose。**FastAPI lifespan 专用**。
+
+    存在的理由：契约守护 #11 把引擎工厂的调用点钉在 db/session.py 一处，
+    于是"谁持有引擎的生命周期"这件事也必须在这里回答 —— api/main.py 不能自己建。
+    名字刻意不叫 `create_engine`（那是上面工厂的名字），但**它在同一个文件里**，
+    "引擎只有一个家"依然成立。本文件不得出现方言字样（守护 #12），故此处不提后端名。
+    """
+    engine = create_engine(database_url)
+    try:
+        yield engine
+    finally:
+        await engine.dispose()

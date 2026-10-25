@@ -1,0 +1,12 @@
+请根据下面的未解决错题推荐下一步学习主题。
+
+候选错题（只能引用这些 exercise_id）：
+
+{% for mistake in mistakes %}
+- exercise_id={{ mistake.exercise_id }}；主题={{ mistake.topic }}；时间={{ mistake.created_at }}
+{% endfor %}
+
+{% if profile_block %}
+学习者画像：
+{{ profile_block }}
+{% endif %}

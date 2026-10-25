@@ -45,17 +45,27 @@ dependencies = [
   "sqlalchemy[asyncio]>=2.0,<3.0",
   "alembic>=1.13",
   "chromadb>=0.5",
+  # 唯一向量化实现（阶段五）。DeepSeek 不提供 embedding 接口（§1），故必须另选。
+  "sentence-transformers>=3.0,<4.0",
+  # 语料 HTML → 结构化块（阶段五）。用标准库 html.parser 解析，不引 lxml。
+  "beautifulsoup4>=4.12,<5.0",
   # 通用（阶段一起就在用）
   "jinja2>=3.1",
   "structlog>=24.1",
   "httpx>=0.27",
   "python-dotenv>=1.0",
   "docker>=7.1",
-  # 前端（阶段八）
-  "streamlit>=1.57",
 ]
 
 [dependency-groups]
+# 前端（阶段八）。**刻意不放进 project.dependencies**：api 镜像按
+# `uv sync --frozen --no-dev` 装全部主依赖，把 streamlit 塞进去等于让后端镜像
+# 多背一个前端框架；web 镜像按 `--only-group web` 只装这两件（SPEC §5.16）。
+# 本地要跑前端：`uv sync --group web`。
+web = [
+  "streamlit>=1.57",
+  "httpx>=0.27",
+]
 dev = [
   "pytest>=8",
   "pytest-asyncio>=0.24",
@@ -66,6 +76,17 @@ dev = [
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pyassist"]
+
+# ---------- torch 钉到 CPU 索引（阶段五，SPEC D1）----------
+# Windows 上 PyPI 默认给的是 CUDA 轮子（约 2.5GB）。开发机不跑 GPU 推理，
+# 白下 2.3GB 毫无意义。该索引不可达时删掉这一节，接受大轮子（SPEC R2）。
+[[tool.uv.index]]
+name = "pytorch-cpu"
+url = "https://download.pytorch.org/whl/cpu"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cpu" }
 
 # ---------- lint ----------
 [tool.ruff]
@@ -101,7 +122,16 @@ ignore = ["RUF001", "RUF002", "RUF003"]
 
 [tool.ruff.lint.per-file-ignores]
 "tests/**" = ["S101"]        # 测试里 assert 是本体
-"experiments/**" = ["S", "T20"]   # 一次性实验：允许 print、允许宽松（§3.5）
+# 异常类名由 AGENTS.md §3.2 冻结（RetrievalEmpty / LLMTimeout / …），不叫 *Error 是刻意的：
+# 名字本身在表达"这是业务结果"而非"这是故障"。N818 与契约冲突，本文件豁免。
+"src/pyassist/errors.py" = ["N818"]
+# 一次性实验：允许 print（§3.5 对 experiments 的豁免）。
+# E402：实验脚本按路径直接跑，需要先 `sys.path.insert` 到 src/ 与 tests/ 才能 import
+# pyassist 与 fakes —— 这段路径设置**必须**在 import 之前，否则脚本在没装包的环境里跑不起来。
+"experiments/**" = ["S", "T20", "E402"]
+# S108 命中的是**容器内**的 /tmp（tmpfs 挂载点与 HOME/TMPDIR），不是宿主机临时目录。
+# 它的安全性恰恰来自 runner 的 noexec/nosuid/size 参数，不是靠"换个路径"。
+"src/pyassist/sandbox/runner.py" = ["S108"]
 "scripts/**" = ["S607"]      # 提交钩子脚本，用裸 "git" 便于跨机器复用
 
 # ---------- 类型 ----------
@@ -112,11 +142,22 @@ mypy_path = "src"
 packages = ["pyassist"]
 plugins = ["pydantic.mypy"]
 
+# sentence-transformers / torch / bs4 均无 stub。放行 import 检查；
+# **但 Any 返回值必须在函数内落到显式注解的局部变量**（SPEC §5.2 的 vectors 陷阱），
+# 不允许用 `# type: ignore` 抹平判据 18（SPEC R7）。
+[[tool.mypy.overrides]]
+# docker 7.2.0 分发里**没有** py.typed（T0 实测），与上面三个同理放行 import 检查。
+# 容器参数的 `Any` 一律在 `sandbox/runner.py` 内落到显式注解的局部变量/返回值。
+module = ["sentence_transformers.*", "torch.*", "bs4.*", "docker.*"]
+ignore_missing_imports = true
+
 # ---------- 测试 ----------
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
 testpaths = ["tests"]
-addopts = "-q --strict-markers --strict-config"
+# `-m 'not docker'`：真实隔离测试默认不跑（daemon 可能没起）。显式跑：
+#   pytest -m docker tests/test_sandbox_docker.py
+addopts = "-q --strict-markers --strict-config -m 'not docker'"
 markers = [
   "docker: 需要真实 Docker 守护进程（阶段七）",
 ]

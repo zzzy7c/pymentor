@@ -1,0 +1,26 @@
+# Caddy 反代（SPEC §5.16）。
+#
+#   /api/*  -> api:8000   前缀被 handle_path 剥掉：/api/chat -> /chat
+#   *       -> web:8501   Streamlit（含 WebSocket）
+#
+# flush_interval -1：把响应写成"有多少发多少"，否则 SSE 会被攒成一次性吐出 ——
+# 本地直连 8000 测不出来，只有过了反代才现形（§2 流式约定）。
+
+{$DOMAIN} {
+	encode zstd gzip
+
+	# API 可选直连：方便用 curl 验收，前端本身走的是容器内的 http://api:8000。
+	# 注意是 handle_path 而不是 reverse_proxy /api/*：后者会把 /api 一起转给 FastAPI，
+	# 后端路由里没有这个前缀，结果是 404。
+	handle_path /api/* {
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:8501 {
+			flush_interval -1
+		}
+	}
+}

@@ -1,0 +1,11 @@
+用户遇到的报错：
+{{ error_text }}
+
+用户提供的代码：
+{% if broken_code %}{{ broken_code }}{% else %}（未提供）{% endif %}
+
+文档片段：
+{% for citation in citations %}[{{ citation.index }}] {{ citation.title }}{% if citation.section %} — {{ citation.section }}{% endif %}
+{{ citation.snippet }}
+
+{% endfor %}

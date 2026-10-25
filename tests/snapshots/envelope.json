@@ -1,0 +1,8 @@
+{
+  "API_VERSION": "v1",
+  "Envelope": ["data", "error", "meta", "ok"],
+  "Meta": ["latency_ms", "request_id", "usage"],
+  "Usage": ["cached_tokens", "completion_tokens", "cost_usd", "is_off_peak", "prompt_tokens"],
+  "ErrorDetail": ["code", "details", "message"],
+  "Page": ["items", "next_cursor", "total"]
+}

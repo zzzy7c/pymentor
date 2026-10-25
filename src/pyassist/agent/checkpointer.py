@@ -29,6 +29,7 @@ from langgraph.checkpoint.sqlite.aio import AsyncSqliteSaver
 from sqlalchemy.engine import make_url
 
 from pyassist.config import resolve_sqlite_path, settings, to_psycopg_conninfo
+from pyassist.errors import ConfigError
 from pyassist.logging import get_logger
 
 logger = get_logger(__name__)
@@ -73,7 +74,8 @@ async def open_checkpointer(
             yield saver
         return
 
-    raise ValueError(f"不支持的数据库后端：{backend!r}（§2 只允许 SQLite / PostgreSQL）")
+    # 服务级配置问题（库后端不认识）→ ConfigError（阶段四 T7 收口）。
+    raise ConfigError(f"不支持的数据库后端：{backend!r}（§2 只允许 SQLite / PostgreSQL）")
 
 
 async def setup_checkpointer(*, database_url: str | None = None) -> None:

@@ -107,6 +107,12 @@
 - 工具调用用 OpenAI 风格 `tools` 数组，支持并行调用与 `strict` 模式（schema 强约束）。
   工具定义集中在 `agent/registry.py` 生成，不要在各 service 里手搓 JSON Schema。
 - 结构化输出优先用 `response_format`（JSON 模式），不要自己 `json.loads` 后正则清洗。
+  **构造结构化输出只经 `llm/client.py::get_structured_output`**，不要直接
+  `model.with_structured_output(...)`：它默认的 `method="function_calling"` 会把
+  `tool_choice` 绑成强制工具调用，而**思考模式不支持 `tool_choice`**，真实调用直接返回
+  `400 Thinking mode does not support this tool_choice`（2026-10-25 在 v2 评估中实测）。
+  该函数改用 json_mode，并把 Pydantic schema 的格式说明并进末条 human 消息
+  （json_mode 不随请求发 schema）。回归测试：`tests/test_structured_output.py`。
 - 长输出用 `graph.astream()`（见 §2 流式约定），避免 HTTP 超时。
 - 重试交给底层 SDK 的 `max_retries`（默认 2），不要手写 `for i in range(3)`。
 
@@ -209,6 +215,7 @@ python助手/
 │   │       └── grade.jinja2
 │   ├── rag/
 │   │   ├── ingest.py            # ★ 唯一写入向量库的地方
+│   │   ├── corpus.py            # ★ 唯一语料抓取与解析（2026-10-13 新增，见 §6）
 │   │   ├── store.py             # 向量库连接（Chroma/Qdrant 切换点）
 │   │   ├── embedder.py          # ★ 唯一向量化出口
 │   │   ├── retriever.py         # ★ 唯一检索入口
@@ -240,7 +247,8 @@ python助手/
 │   │   ├── diagnose.py          # v2
 │   │   ├── exercise.py          # v3
 │   │   ├── progress.py          # v4
-│   │   └── memory.py            # 阶段五：短期/长期/摘要记忆
+│   │   ├── memory.py            # 阶段五：短期/长期/摘要记忆
+│   │   └── usage.py             # ★ 唯一写 Token 账本 / 配额检查（ADR 0003 决定 2）
 │   ├── api/
 │   │   ├── main.py              # FastAPI app 工厂
 │   │   ├── deps.py              # 依赖注入
@@ -252,14 +260,21 @@ python助手/
 │   │       ├── diagnose.py      # POST /diagnose
 │   │       ├── exercises.py     # POST /exercises, POST /exercises/{id}/submit
 │   │       ├── history.py       # GET  /history
+│   │       ├── progress.py      # POST /recommend（ADR 0003 决定 1）
 │   │       └── stats.py         # GET  /stats
 │   └── evals/
 │       ├── run_rag_eval.py      # Recall@5、引用准确率
+│       ├── run_v2_eval.py       # 错误类型准确率、修复通过率
+│       ├── run_v3_eval.py       # 自洽率、生成自洽率、标注导出/一致率
 │       └── datasets/            # 评估集
 ├── frontend/
-│   └── streamlit_app.py         # 只调 HTTP API
+│   ├── streamlit_app.py         # 只调 HTTP API
+│   └── api_client.py            # 前端唯一 HTTP 客户端（路径由守护 #44 对齐 OpenAPI）
 ├── frontend_telegram/           # 可选适配器（v4 之后）
 │   └── bot.py
+├── scripts/
+│   └── prune_threads.py         # 手动清理过期检查点（默认 dry-run）
+├── deploy/                      # 生产 compose、Caddyfile、部署手册
 ├── docs/decisions/              # ADR：记录偏离本文件的决定（如临时关闭思考模式）
 ├── experiments/                 # 一次性对比实验，不参与部署
 └── tests/
@@ -274,9 +289,11 @@ python助手/
 | 构造模型实例 | `llm/client.py` | 在节点里 `ChatDeepSeek(...)` 或 `ChatOpenAI(...)` |
 | 发 LLM 请求 | `llm/client.py` 暴露的模型实例 | 节点里自己拼 `chat.completions.create` |
 | 模型 ID 常量 | `config.py` | 在 tool 或 prompt 里硬写 `"deepseek-v4-pro"` |
+| 构造结构化输出 | `llm/client.py::get_structured_output` | 各节点直接 `model.with_structured_output(...)` —— 默认 function_calling 绑 `tool_choice`，思考模式必 400 |
 | 修复 `reasoning_content` | `llm/deepseek_chat.py` | 各节点各打一个补丁，或在图里手动补字段 |
 | 写 Prompt 文本 | `llm/prompts/*.jinja2` | 在 Python 里写多行 prompt 字符串 |
-| 统计 Token / 成本 | `llm/tracing.py` | 各处自己累加 `usage_metadata` |
+| 计价（token → 成本） | `llm/tracing.py` | 各处自己累加 `usage_metadata` |
+| 写 Token 账本 / 配额检查 | `services/usage.py` | 在 router 里直接 `append_token_usage(...)` |
 | 定义工具 | `agent/registry.py` | 在 service 里随手 `@tool` 装饰一个新函数 |
 | 图状态 schema | `agent/state.py` | 每张图各定义一个互不兼容的 State |
 | 拼装图与节点 | `agent/graphs/*.py` | service 里再写一遍手搓的 `while` 工具循环 |
@@ -284,6 +301,8 @@ python助手/
 | 长期记忆读写 | `agent/store.py` | 另起一套用户画像表，或第二个向量库 |
 | 流式事件 → SSE 映射 | `api/routers/chat.py` | 前端直接消费 LangGraph 原始事件 |
 | 向量化文本 | `rag/embedder.py` | ingest 和 retriever 各用一套 embedding |
+| 数 token（长度分桶的排序键） | `rag/embedder.py` 的 `Embedder.count_tokens` | 在 ingest 里自己摸 `tokenizer`，或按 `len(text)` 分桶 —— 后者实测只省 20.1% 而非 42.2%，见 §4 |
+| 语料抓取与解析 | `rag/corpus.py` | 在 `ingest.py` 里顺手写下载 / HTML 解析，或让 `corpus.py` import `rag.store` |
 | 写向量库 | `rag/ingest.py` | 运行时往库里 upsert |
 | 读向量库 | `rag/retriever.py` | 直接 `collection.query()` |
 | 生成引用对象 | `rag/citations.py` | 让 LLM 自由发挥引用格式 |
@@ -291,6 +310,13 @@ python助手/
 | 访问数据库 | `db/repositories.py` | service 里裸写 `session.execute()` |
 | 异常 → HTTP 状态码 | `api/errors.py` | router 里 `raise HTTPException(500)` |
 | 响应外壳 | `api/schemas.py` | 手写 `return {"code": 0, "msg": ...}` |
+
+> **新增「语料抓取与解析 → `rag/corpus.py`」（2026-10-13，按 §6 流程登记）**：
+> 抓取/解析是新能力（网络 I/O + HTML 解析 + URL 映射），与 `ingest.py` 的「唯一写向量库」是
+> 两种不同的变更理由。塞进 `ingest.py` 会让该文件同时承担抓取，守护 #23/#24 的边界跟着变糊。
+> 拆开后 `parse_document` 是**纯函数**（入参是已读好的 HTML 字符串），可离线单测，
+> 不需碰 Chroma / embedder。**现有代码里没有平行实现**（`rag/` 此前只有 `__init__.py`），
+> 满足 §6 第 2 条。详见 `SPEC.md` §5.12 / `docs/specs/` 阶段五规格。
 
 **工具名与实现名必须一致**：LLM 看到的 `search_docs` 必须对应 `agent/tools/docs.py` 里的 `search_docs`。
 不允许出现 `search_docs` → `do_search` 这种映射层。
@@ -391,9 +417,22 @@ LangGraph 自带状态持久化，必须与 SQLAlchemy 划清边界，否则会�
     "message": "未在语料中检索到相关内容",
     "details": { "query": "asyncio.gather 异常处理" }
   },
-  "meta": { "request_id": "req_01H...", "latency_ms": 120 }
+  "meta": {
+    "request_id": "req_01H...",
+    "latency_ms": 120,
+    "usage": {
+      "prompt_tokens": 0,
+      "completion_tokens": 0,
+      "cached_tokens": 0,
+      "cost_usd": 0.0,
+      "is_off_peak": true
+    }
+  }
 }
 ```
+
+（上面的 `usage` 是"这次请求没消耗模型"的**零值填法**，与下面的规则一致：
+失败时 `usage` 仍然在位，缺就填零，**不省略字段**。）
 
 规则：
 - `meta` 三个字段**永远存在**，即使出错。缺 `usage` 时填零值而非省略。
@@ -426,6 +465,25 @@ AppError
 │   └── SandboxRejected         → 200（安全策略拦截，同上）
 └── StoreError                  → 500
 ```
+
+以上是**业务**异常树。还有一类异常不在这棵树里 —— 它们由框架在路由匹配、方法匹配、
+限流这些**传输层**环节抛出，根本不经过业务代码。为了让 §3.1 的"任何失败都带完整信封"
+成立（否则 `error.code` 无值可取，而 §3.1 又禁止自造字符串），下面四个码**登记为枚举的
+一部分，与上面的树同级**（2026-10-03 批准。属**新增**，不改动上面任何一条的语义）：
+
+```
+NOT_FOUND             → 404（未知路由）
+METHOD_NOT_ALLOWED    → 405（方法不匹配）
+RATE_LIMITED          → 429（本服务对调用方限流，slowapi）
+INTERNAL_ERROR        → 500（兜底：未分类异常。不外泄 message 与 traceback）
+```
+
+- **`RATE_LIMITED` 与 `LLMRateLimited` 是两件事，必须分开**：前者是我们限调用方，
+  后者是上游 DeepSeek 限我们。状态码同为 429，但**码不同** —— 混用会让"谁被限流了"
+  这件事在报表里消失。
+- 本次增补发生在 `API_VERSION` 首次发布之前（尚无已发布契约、无 `frontend/` 消费方），
+  故**不涉及** §6 的破坏性变更流程；增补之后，这四个码与树内各码受同样的冻结约束。
+- 因此**完整的 `error.code` 取值集合** = 业务异常树的全部叶子码 + 上面四个传输层码。
 
 处理原则：
 - **捕获链条，不要捕获大类**。按 `NotFoundError` → `RateLimitError` → `APIStatusError` → `APIConnectionError` 从具体到宽泛的顺序写，禁止一个 `except Exception` 吞掉全部。
@@ -479,7 +537,8 @@ AppError
 |-------------|------|------|
 | `data/corpus/**` | 禁止手工编辑、禁止删除 | 语料是一切回答的事实来源。要更新只能跑 `rag/ingest.py` 的抓取流程 |
 | `data/chroma/**` | 禁止手改 | 向量索引产物。重建 = 删目录 + 重跑 ingest，不允许"局部修补" |
-| `evals/datasets/**` | 只能**新增**，禁止修改已有用例 | 评估集是回归基线。为了提分改测试集是本项目最严重的作弊 |
+| `config.HNSW_SYNC_THRESHOLD` / `config.HNSW_BATCH_SIZE`（2026-10-13 新增，见 §6） | 禁止调回小值（尤其 Chroma 默认的 1000） | 调小 = 写入期间每 N 条把**整个索引**重写一遍，每次都是一次"写坏了就不可恢复"的机会。2026-10-13 全量 ingest 就是这样丢掉了前 16384 条向量（4.8 小时白跑，且 CLI 报成功）。阈值调大换来的是：磁盘上不再存在写了一半的索引，最坏情况降级为"从 WAL 现场重建"。详见 `SPEC.md` §10 第 15 条 |
+| `src/pyassist/evals/datasets/**`（旧写作 `evals/datasets/**`，2026-10-13 补全路径） | 只能**新增**，禁止修改已有用例 | 评估集是回归基线。为了提分改测试集是本项目最严重的作弊 |
 | `src/pyassist/sandbox/Dockerfile.sandbox` | 改动需人工 review | 这是隔离用户代码的唯一安全边界。放宽 = 把宿主机暴露给任意代码 |
 | `src/pyassist/api/schemas.py` | 契约冻结 | 改字段 = 破坏性变更。必须 bump `API_VERSION` 并同步更新 `frontend/` |
 | `src/pyassist/api/errors.py` | 唯一异常映射点 | 在别处 `raise HTTPException` 会让错误格式分叉 |
@@ -498,10 +557,19 @@ AppError
 - 禁止在没有沙箱隔离的情况下跑任何来自用户或 LLM 的代码片段。
 - 禁止为通过测试而修改测试或跳过测试（`pytest.skip` 需注释说明原因）。
 - 禁止直接 `ChatDeepSeek(...)` / `ChatOpenAI(...)`，必须经 `llm/client.py` 拿 `ChatDeepSeekPatched`。
+- 禁止直接 `model.with_structured_output(...)`，必须经 `llm/client.py::get_structured_output`
+  （思考模式不支持 `tool_choice`，见 §1）。
 - 禁止在业务表里再存一份对话消息（对话历史的唯一真相是 LangGraph 检查点，见 §2）。
 - 禁止在 async 路由里调用同步的 `graph.stream()`；禁止让前端消费 LangGraph 原始事件。
 - 禁止引入 LlamaIndex / Gradio / LangChain 预置 Agent 到 `src/`。
 - 禁止 `except Exception: pass`。
+- **禁止拿 `count()` 当"索引可用"的判据**（2026-10-13 补，见 §4 表与 `SPEC.md` §10 第 15 条）。
+  `count()` 读的是**元数据段**，`query()` 才真正走 HNSW —— 两者撕裂正是事故的形态：
+  实测一个坏库上 `count()` 报 17366，而检索只找得到 983 条。要判可用性用
+  `rag/retriever.py::probe_index_depth`（关掉→重开→多要结果，1% 容差）。
+- **禁止绕过 `rag/retriever.py` 直接 `collection.query()` / `collection.get()`**（§2 单点所有权）。
+  2026-10-13 写 ingest 验收时就这么干过，被 `test_contract_guardrails.py::test_chroma_query_only_in_rag_retriever`
+  抓住 —— 探针因此住在 `retriever.py`。守护 #24 是真的会红的，别试着绕。
 
 ---
 
@@ -572,11 +640,29 @@ AppError
 1. 说明改哪一节、为什么现在不对；
 2. 若是新增禁区或单点所有权，先确认现有代码里没有平行实现；
 3. 改 §3.1 / §3.2 属破坏性变更，需同步 bump `API_VERSION` 并更新 `frontend/`。
+   **例外：新增枚举值不是破坏性变更** —— 既有取值不变、消费方无需改动。
+   删码、改状态码、改既有码的语义才是。凡新增，在 §3.2 就地标注日期与理由，
+   并在 `docs/decisions/` 留一份 ADR（例：ADR 0002 决定 1）。
 
 ---
 
-**实际锁定版本**（安装后回填）：
+**实际锁定版本**（2026-10-22 回填，来源 `uv.lock` / `importlib.metadata`）：
 ```
-# uv pip list | grep -E 'openai|fastapi|pydantic|sqlalchemy|chromadb|streamlit'
-# 待回填
+openai                          1.109.1      langgraph                       1.1.10
+fastapi                         0.142.2      langchain-core                  1.6.6
+pydantic                        2.13.5       langchain-deepseek              1.1.0
+pydantic-settings               2.15.0       langgraph-checkpoint-sqlite     2.0.11
+sqlalchemy                      2.1.3        langgraph-checkpoint-postgres   2.0.25
+alembic                         1.20.0       chromadb                        1.5.9
+uvicorn                         0.54.0       sentence-transformers           3.4.1
+httpx                           0.28.1       streamlit                       1.65.0
+structlog                       26.1.0       docker                          7.2.0
+slowapi                         0.1.10       sse-starlette                   3.5.0
+jinja2                          3.1.6        python-dotenv                   1.2.4
+pytest                          9.1.1        pytest-asyncio                  1.4.0
+respx                           0.23.1
 ```
+
+> 该表由 `uv.lock` 唯一决定；升级依赖后必须同步回填，否则本文件会与锁文件对不上。
+> 注意 `streamlit` 在 `[dependency-groups] web` 里，不在 `project.dependencies`
+> （ADR 0004 决定 3）：它不属于后端运行时依赖。

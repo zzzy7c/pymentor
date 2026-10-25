@@ -8,6 +8,7 @@ from decimal import Decimal
 import pytest
 
 from pyassist.config import MODEL_FLASH, MODEL_PRO
+from pyassist.errors import ConfigError
 from pyassist.llm.tracing import is_off_peak, price_usage
 
 
@@ -63,8 +64,12 @@ def test_is_off_peak_rejects_naive_datetime() -> None:
 
 
 def test_unknown_model_id_is_rejected() -> None:
-    """模型名只允许写在 config.py：表外模型必须报错，不能静默按 0 计价。"""
-    with pytest.raises(RuntimeError, match="PRICE_TABLE"):
+    """模型名只允许写在 config.py：表外模型必须报错，不能静默按 0 计价。
+
+    阶段四 T7 把它从 `RuntimeError` 收口成 `errors.ConfigError`（服务级配置缺失，
+    见 SPEC 待定项 11），故这里改断 ConfigError —— 它同样匹配 "PRICE_TABLE"。
+    """
+    with pytest.raises(ConfigError, match="PRICE_TABLE"):
         price_usage(
             "some-model-that-is-not-in-the-table",
             cached_tokens=0,

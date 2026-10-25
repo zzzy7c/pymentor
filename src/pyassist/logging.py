@@ -50,11 +50,18 @@ def configure_logging(level: str = "INFO", *, json_output: bool = True) -> None:
 
     # structlog 侧：以 wrap_for_formatter 收尾，真正的渲染交给下面的 ProcessorFormatter。
     # 这样 structlog 与被 stdlib 记录的日志（uvicorn / sqlalchemy）共用同一个渲染器。
+    #
+    # `cache_logger_on_first_use=False` **是踩过坑之后定的**：置 True 时，一个模块级
+    # `logger = get_logger(__name__)` 会在**首次使用**时把处理器链冻在任何当时的配置上。
+    # 于是任何后来的重配置对它失效 —— 实测发生在测试套件里：`test_ingest_idempotent`
+    # 跑了 CLI（`main()` → `configure_logging`）之后，`test_ingest_progress` 的
+    # `capture_logs()` 收到 **0 条**事件（日志还被灌进已关闭的 stdlib 流里报
+    # `I/O operation on closed file`）。代价只是一次字典查找，换来的是"重配置永远生效"。
     structlog.configure(
         processors=[*_SHARED_PROCESSORS, structlog.stdlib.ProcessorFormatter.wrap_for_formatter],
         logger_factory=structlog.stdlib.LoggerFactory(),
         wrapper_class=structlog.stdlib.BoundLogger,
-        cache_logger_on_first_use=True,
+        cache_logger_on_first_use=False,
     )
 
     formatter = structlog.stdlib.ProcessorFormatter(

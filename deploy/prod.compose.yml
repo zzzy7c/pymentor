@@ -1,0 +1,81 @@
+# 生产编排：api + web + caddy（SPEC §5.16 / D12）。
+#
+# 为什么是单机 compose 而不是 PaaS：本项目的沙箱要 `docker.sock`，
+# 托管平台的"容器里再跑容器"要么不支持、要么等于把宿主交给它。
+#
+# 前置步骤（缺一步就起不来，见 deploy/README.md）：
+#   1. cp .env.example .env && 填 DEEPSEEK_API_KEY
+#   2. 在**宿主**构建沙箱镜像（compose 不负责）：
+#        docker build -f src/pyassist/sandbox/Dockerfile.sandbox -t pyassist-sandbox:1 .
+#   3. 让容器用户（uid 10001）能读写数据卷与 Docker socket：
+#        sudo chown -R 10001:10001 data
+#        export DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+#   4. export DOMAIN=your.domain  （Caddy 用它申请证书，必须是真实可解析的域名）
+#
+# 启动：
+#   docker compose -f deploy/prod.compose.yml up -d --build
+
+name: pyassist
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile.api
+    # 密钥只进容器，不进镜像、不进 compose 的 git diff。
+    #
+    # **不要再写一份 `environment:` 覆盖这里已有的键**：compose 的 `${VAR}`
+    # 只从 shell / deploy/.env 插值，不认识 `env_file` 里的值。写一句
+    # `DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY:-}` 会把根 `.env` 里的真密钥覆盖成空串
+    # —— 服务能起，但每个请求都 401，且看起来像"密钥没配"。
+    #
+    # `.env` 里的相对路径 `sqlite+aiosqlite:///data/app.db` 在容器里相对 WORKDIR=/app，
+    # 正好落到 /app/data/app.db，无需改写。
+    env_file:
+      - path: ../.env
+        required: false
+    volumes:
+      # 业务库 + 检查点 + 语料 + 向量库，全在这一个目录（§2 两份状态同一个库）。
+      - ../data:/app/data
+      # 模型权重单列一卷：删 data/chroma 重建索引时不该连带重下 bge-m3。
+      - ../data/hf:/app/data/hf
+      # 沙箱由 api 通过宿主 daemon 创建。**这一行等于把宿主 root 借给 api 容器**，
+      # 威胁模型见 deploy/README.md；api 自身从不执行用户代码。
+      - /var/run/docker.sock:/var/run/docker.sock
+    # Docker socket 通常属 root:docker(660)。补上宿主 docker 组的 GID，
+    # 非 root 的 app 用户才连得上。未设置时退回 gid 0（仅当 socket 属 root:root 时有效）。
+    group_add:
+      - "${DOCKER_GID:-0}"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile.web
+    environment:
+      PYASSIST_API_BASE_URL: http://api:8000
+    depends_on:
+      api:
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8-alpine
+    environment:
+      # 没有默认值：拿 localhost 静默起一个自签证书比直接报错更难排查。
+      DOMAIN: ${DOMAIN:?请设置 DOMAIN（Caddy 用它申请证书）}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - web
+    restart: unless-stopped
+
+volumes:
+  caddy_data:
+  caddy_config:

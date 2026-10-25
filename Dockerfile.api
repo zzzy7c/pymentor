@@ -1,0 +1,60 @@
+# FastAPI 后端镜像（SPEC §5.16）。
+#
+# 两条硬约束：
+#   1. 非 root（uid 10001）。容器里跑的是用户输入触发的 LLM/沙箱编排，
+#      没有理由给它 root。
+#   2. 不装 dev 依赖；`data/` 走卷，镜像里不 COPY 语料与向量库。
+#
+# 构建（在仓库根目录）：
+#   docker build -f Dockerfile.api -t pyassist-api:1 .
+#
+# 运行时需要把宿主的 `/var/run/docker.sock` 挂进来，沙箱容器由这里的
+# `sandbox/runner.py` 通过 Docker API 创建。用户代码**从不**在 api 容器里执行。
+
+FROM python:3.12-slim AS base
+
+# uv 的静态二进制。版本钉住：`:latest` 会让同一条 git 提交在不同日子构建出不同的镜像。
+COPY --from=ghcr.io/astral-sh/uv:0.11.16 /uv /uvx /bin/
+
+ENV PYTHONUNBUFFERED=1 \
+    PYTHONDONTWRITEBYTECODE=1 \
+    # 模型权重落数据卷：重建镜像是常态，重新下载 bge-m3 不是。
+    HF_HOME=/app/data/hf \
+    UV_COMPILE_BYTECODE=1 \
+    UV_LINK_MODE=copy \
+    PATH="/app/.venv/bin:$PATH"
+
+WORKDIR /app
+
+# 先建用户，再 COPY：镜像层的属主是 root，运行期只读，不需要逐层 chown。
+RUN groupadd --gid 10001 app \
+    && useradd --uid 10001 --gid 10001 --create-home --shell /usr/sbin/nologin app
+
+# ---- 依赖层（只要 pyproject/uv.lock 不变就命中缓存）----
+COPY pyproject.toml uv.lock ./
+# `--no-install-project`：此时 src/ 还没进来，先装第三方依赖。
+RUN uv sync --frozen --no-dev --no-install-project
+
+# ---- 项目层 ----
+COPY src/ ./src/
+RUN uv sync --frozen --no-dev
+
+# 运维脚本：部署手册里的检查点清理命令要在容器内执行（`docker compose exec`）。
+# 只放这一个文件，不带 restic/备份之类的无关脚本。
+COPY scripts/prune_threads.py ./scripts/prune_threads.py
+
+# 数据卷挂载点。**先建再 chown**：宿主机目录的属主由部署脚本负责（见 deploy/README.md），
+# 这里至少保证"不挂卷直接跑"时应用可写。
+RUN mkdir -p /app/data/hf && chown -R app:app /app/data
+
+USER app
+EXPOSE 8000
+
+# 不依赖 curl（slim 镜像里没有）。
+HEALTHCHECK --interval=30s --timeout=5s --start-period=90s --retries=3 \
+    CMD ["python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3).read()"]
+
+# 直接调 uvicorn 而不是 `uv run`：`uv run` 在容器启动时会检查项目环境，
+# 一旦判定"需要同步"就会去碰网络。镜像里的 .venv 已经是 `--frozen` 的产物，
+# 运行期只读比"方便"重要。
+CMD ["uvicorn", "pyassist.api.main:app", "--host", "0.0.0.0", "--port", "8000"]

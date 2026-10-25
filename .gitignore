@@ -141,3 +141,6 @@ data/**
 output/
 tmp/
 .cache/
+
+# 人工标注样本（SPEC §5.18）：含用户提交代码，只在本机/受控环境流转，不进 git
+docs/evals/阶段八-标注样本-*.csv

@@ -14,7 +14,11 @@ from datetime import UTC, datetime
 from typing import Any, Literal
 
 import openai
-from pydantic import SecretStr
+from langchain_core.language_models import BaseChatModel
+from langchain_core.messages import BaseMessage, HumanMessage
+from langchain_core.output_parsers import PydanticOutputParser
+from langchain_core.runnables import Runnable, RunnableLambda
+from pydantic import BaseModel, SecretStr
 
 from pyassist.config import (
     EXPECTED_MODEL_IDS,
@@ -22,6 +26,7 @@ from pyassist.config import (
     MODEL_PRO,
     settings,
 )
+from pyassist.errors import ConfigError
 from pyassist.llm.deepseek_chat import ChatDeepSeekPatched
 from pyassist.logging import get_logger
 
@@ -70,8 +75,9 @@ def get_chat_model(
     """
     resolved_key = api_key or settings.deepseek_api_key
     if resolved_key is None:
-        # 阶段四会把它换成 errors.ConfigError（见 SPEC 待定项 2）。此处不留 TODO 占位。
-        raise RuntimeError("DEEPSEEK_API_KEY 未设置，无法构造模型实例。请在 .env 配置后重试。")
+        # 阶段二留的口子，阶段四收口：服务级配置缺失 → ConfigError（映射到 500）。
+        # message 只说明"未配置"，绝不包含密钥本身。
+        raise ConfigError("DEEPSEEK_API_KEY 未设置，无法构造模型实例。请在 .env 配置后重试。")
 
     extra_body: dict[str, Any] = dict(kwargs.pop("extra_body", None) or {})
     extra_body.setdefault("thinking", {"type": "enabled" if thinking else "disabled"})
@@ -87,6 +93,54 @@ def get_chat_model(
         extra_body=extra_body,
         **kwargs,
     )
+
+
+def get_structured_output(
+    model: BaseChatModel,
+    schema: type[BaseModel],
+) -> Runnable[Any, Any]:
+    """★ 唯一结构化输出构造点（§3.4 / SPEC S5）。四处调用，全部经这里。
+
+    三条约束同时成立，任何一条被绕开都会在真实调用里炸：
+
+    1. **必须 `method="json_mode"`。** `with_structured_output()` 默认走
+       `function_calling`：它把 `tool_choice` 绑成强制工具调用，而 DeepSeek
+       思考模式直接回 400 `Thinking mode does not support this tool_choice`。
+       反过来 JSON 模式只发 `response_format={"type": "json_object"}`，
+       §1 也要求结构化输出优先用它。
+    2. **`include_raw=True` 不能省。** 否则 `usage_metadata` 丢掉，
+       pro 档成本会整段消失（SPEC S5）。
+    3. **json_mode 不随请求发送 schema**，模型不知道字段名。所以把
+       `PydanticOutputParser` 的格式说明追加在末条 human 消息之后：
+       schema 的唯一来源仍是 Pydantic 模型，不在 prompt 里手抄字段名
+       （抄了就会漂移）。说明逐字节稳定，且排在稳定前缀之后，不影响缓存命中。
+    """
+    instructions = PydanticOutputParser(pydantic_object=schema).get_format_instructions()
+
+    def prepare(messages: list[BaseMessage]) -> list[BaseMessage]:
+        return _append_format_instructions(messages, instructions)
+
+    runtime: Runnable[list[BaseMessage], list[BaseMessage]] = RunnableLambda(prepare)
+    structured = model.with_structured_output(schema, method="json_mode", include_raw=True)
+    return runtime | structured
+
+
+def _append_format_instructions(
+    messages: list[BaseMessage], instructions: str
+) -> list[BaseMessage]:
+    """格式说明**并进末条 human 消息**，不新起一条。
+
+    调用方（和测试）都按"末条消息是本轮任务"来读；多插一条会让
+    `messages[-1]` 变成格式说明，把上一次失败结果挤出视线。
+    """
+    if (
+        messages
+        and isinstance(messages[-1], HumanMessage)
+        and isinstance(messages[-1].content, str)
+    ):
+        last = messages[-1]
+        return [*messages[:-1], HumanMessage(content=f"{last.content}\n\n{instructions}")]
+    return [*messages, HumanMessage(content=instructions)]
 
 
 def check_models(*, api_key: SecretStr | None = None) -> ModelCheckResult:

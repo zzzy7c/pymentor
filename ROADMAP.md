@@ -308,7 +308,12 @@ uv run pytest tests/test_envelope.py tests/test_error_mapping.py
 
 ### 阻塞项
 
-无。
+- ✅ **已关闭（2026-10-03）**：§3.2 原缺 404 / 405 / 429 / 兜底 500 的错误码，
+  而 §3.1 禁止自造字符串 —— "信封完备"与"`error.code` 只取枚举"这两条无法同时满足。
+  已批准在 §3.2 增补 `NOT_FOUND` / `METHOD_NOT_ALLOWED` / `RATE_LIMITED` / `INTERNAL_ERROR`
+  四个传输层码（属新增，不改既有语义）。见 `AGENTS.md` §3.2 与
+  `docs/decisions/0002-信封与异常映射.md` 决定 1。
+- 其余无。
 
 ### 为什么排在这
 

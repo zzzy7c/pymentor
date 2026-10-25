@@ -1,0 +1,9 @@
+请为下面的主题生成一道练习。
+
+主题：{{ topic }}
+
+{% if attempt_feedback %}
+上一轮生成的题目没有通过自校验，请修正后重新生成。失败信息：
+
+{{ attempt_feedback }}
+{% endif %}

@@ -1,0 +1,22 @@
+题目：{{ title }}
+主题：{{ topic }}
+
+题目描述：
+{{ prompt }}
+
+测试结果：共 {{ report_total }} 条，通过 {{ report_passed }} 条，
+失败 {{ report_failed }} 条，错误 {{ report_errors }} 条，跳过 {{ report_skipped }} 条。
+
+{% if failures %}
+失败用例与信息：
+
+{{ failures }}
+{% else %}
+本次测试全部通过。
+{% endif %}
+
+用户提交的代码：
+
+```python
+{{ code }}
+```

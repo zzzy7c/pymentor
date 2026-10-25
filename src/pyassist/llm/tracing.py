@@ -14,9 +14,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 
 from pyassist.config import PEAK_WINDOWS_UTC, PRICE_TABLE
+from pyassist.errors import ConfigError
 from pyassist.logging import get_logger
 
 logger = get_logger(__name__)
@@ -61,7 +63,8 @@ def price_usage(
     """按 `config.PRICE_TABLE` 分别计价后求和。单价单位 USD / 1M tokens。"""
     tier = PRICE_TABLE.get(model_id)
     if tier is None:
-        raise RuntimeError(
+        # 服务级配置缺失 → ConfigError（阶段四 T7 收口，见 SPEC 待定项 11）。
+        raise ConfigError(
             f"PRICE_TABLE 里没有 {model_id!r} 的单价。模型名只允许写在 config.py（§1 / §2）。"
         )
 
@@ -127,6 +130,34 @@ def extract_usage(
         cost_usd=cost_usd,
         is_off_peak=off_peak,
     )
+
+
+def add_usage(left: UsageSnapshot, right: UsageSnapshot) -> UsageSnapshot:
+    """多轮工具调用的用量合计（状态里每轮覆盖，对外只报一个数）。
+
+    阶段六曾把这段写在 `services/qa.py`；阶段七的诊断图要用同一条规则，
+    所以上收到本模块 —— 否则两张图会各自累加，迟早出现"一个算缓存命中一个不算"。
+    `is_off_peak` 取右值：同一请求内跨过峰值边界是极小概率，取最新时刻即可。
+    """
+    return UsageSnapshot(
+        prompt_tokens=left.prompt_tokens + right.prompt_tokens,
+        completion_tokens=left.completion_tokens + right.completion_tokens,
+        cached_tokens=left.cached_tokens + right.cached_tokens,
+        cost_usd=left.cost_usd + right.cost_usd,
+        is_off_peak=right.is_off_peak,
+    )
+
+
+def model_id_of(model: BaseChatModel) -> str:
+    """取模型的 `model_name` 用来计价。缺失时明确报错，不猜一个默认值。
+
+    `PRICE_TABLE` 只认 `config.py` 里的两个模型 ID（§1）—— 猜一个会在成本报表里
+    静默记到别的模型头上。
+    """
+    name = getattr(model, "model_name", None)
+    if isinstance(name, str) and name:
+        return name
+    raise ConfigError("模型实例没有 model_name，无法按 PRICE_TABLE 计价")
 
 
 def log_llm_response(snapshot: UsageSnapshot, *, model_id: str, latency_ms: int) -> None:
