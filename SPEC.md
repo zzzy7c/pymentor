@@ -30,8 +30,9 @@
 > `-m docker` **11 passed**（10 条安全边界 + 夹具自洽），v2 `error_type_accuracy=0.900` /
 > `fix_pass_rate=0.950`，阶段八夹具自洽 `self_consistency=1.000`
 > （`docs/evals/阶段七-跑分.md` §5/§7、`docs/evals/阶段八-跑分.md` §5）。
-> 仍**未验证**的是：v3 `--generate` 的生成自洽、评分与人工一致率，以及
-> `timeout_seconds=10` 的冷启动校准。
+> v3 `--generate` 也已产出 `records=20 self_consistency=1.000 failed=0`（2026-10-25）。
+> 仍**未验证**的是：评分与人工一致率（需人工标注 30 份），以及 `timeout_seconds=10`
+> 的冷启动校准。
 
 ---
 
@@ -179,7 +180,7 @@
 | U2 | `unittest` 自定义 `TestResult` 在 `-I` + 只读根文件系统 + `tmpfs /tmp` 下能否正常产出 JSON | 决定 D4 的结果协议是否成立 | 退回"解析 unittest 文本输出"（脆弱，需固定 `-v` 格式）；或让脚注把 JSON 写到 `/tmp` 再读日志（不可行，需改 runner，故优先保 D4） |
 | U3 | 单文件拼接时用户代码顶层的 `if __name__ == "__main__"` 是否会先执行并干扰测试 | 拼装方案的已知弱点 | prompt 明令禁止 + `self_check` 发现即重生成；仍失败则 `LLMBadResponse` |
 | U4 | `python:3.12-slim` 冷启动 + 一次 unittest 的总耗时是否仍落在 `timeout_seconds=10` | 测试比单脚本多几个 import；10s 可能不够 | 在 `SandboxLimits` 增 `test_timeout_seconds`（默认 15），并发跑分文档记录 |
-| U5 | ~~`with_structured_output(ExerciseDraft)` 在思考模式下是否可用~~ **结论（2026-10-25）：不可用** —— 默认 `function_calling` 会绑 `tool_choice`，思考模式直接 400。已统一改走 `llm/client.py::get_structured_output`（json_mode），修复路径由 v2 真实跑分验证；v3 `--generate` 仍待跑 | DeepSeek 的 JSON 模式与思考模式组合在阶段七只验证过 `RepairDraft` | 已按 `AGENTS.md` §1 的"优先 `response_format`"解决，不需要关闭思考 |
+| U5 | ~~`with_structured_output(ExerciseDraft)` 在思考模式下是否可用~~ **结论（2026-10-25）：不可用** —— 默认 `function_calling` 会绑 `tool_choice`，思考模式直接 400。已统一改走 `llm/client.py::get_structured_output`（json_mode）；v2 真实跑分与 v3 `--generate`（20 条、自洽 `1.000`）均在思考模式下跑通 | DeepSeek 的 JSON 模式与思考模式组合在阶段七只验证过 `RepairDraft` | 已按 `AGENTS.md` §1 的"优先 `response_format`"解决，不需要关闭思考 |
 | U6 | api 镜像内安装 `sentence-transformers` + CPU torch 的体积与首次模型下载 | 决定部署形态与卷布局（R7） | 用宿主预下载 + `HF_HOME` 卷；再不行改第三方 embedding（产品决定） |
 | U7 | Streamlit 1.57 对 SSE 的逐字渲染观感 | §5.5「流式输出可见」是体验指标 | 改用 `st.write_stream` + 自解析；最差退回轮询式增量显示 |
 | U8 | Caddy 反代下 SSE 是否被缓冲 | 缓冲会让"逐字上屏"变成"一次性吐出" | `flush_interval -1` + `X-Accel-Buffering: no`；实测后再定 |
