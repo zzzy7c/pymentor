@@ -13,7 +13,7 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Any, Final, Literal
 
-from pydantic import BaseModel, Field, SecretStr
+from pydantic import BaseModel, Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from sqlalchemy.engine import make_url
 
@@ -388,6 +388,26 @@ class Settings(BaseSettings):
     # 阶段五接上：默认值引用常量，不再允许 None（None 会让每次调用都要判空）。
     embedding_model_id: str = Field(default=DEFAULT_EMBEDDING_MODEL_ID, min_length=1)
     daily_token_limit: int | None = None  # ROADMAP 待定项 5
+
+    @model_validator(mode="before")
+    @classmethod
+    def _drop_empty_env_values(cls, data: object) -> object:
+        """空串等价于"没配"，而不是"显式设成空"。
+
+        `.env.example` 里 `EMBEDDING_MODEL_ID=` 这类写法、compose 的 `${VAR:-}`，
+        都会把变量设成空串。若不丢弃：
+        - `embedding_model_id` 触发 `min_length=1`，`import pyassist.config` 直接崩；
+        - `LOG_JSON=` 无法解析成 bool，同样崩；
+        - `DEEPSEEK_API_KEY=` 会变成 `SecretStr("")`，启动看似成功、首次请求才 401；
+        - `DATABASE_URL=` 会让引擎拿到空 URL。
+        """
+        if not isinstance(data, dict):
+            return data
+        return {
+            key: value
+            for key, value in data.items()
+            if not (isinstance(value, str) and value == "")
+        }
 
 
 settings = Settings()

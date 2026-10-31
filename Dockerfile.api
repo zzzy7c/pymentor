@@ -39,6 +39,11 @@ RUN uv sync --frozen --no-dev --no-install-project
 COPY src/ ./src/
 RUN uv sync --frozen --no-dev
 
+# 迁移文件与 alembic.ini：首次部署要在容器内跑 `alembic upgrade head`。
+# 否则业务表与 checkpointer/store 表都不存在，`/history` 等接口第一次请求才报错。
+COPY alembic.ini ./
+COPY migrations/ ./migrations/
+
 # 运维脚本：部署手册里的检查点清理命令要在容器内执行（`docker compose exec`）。
 # 只放这一个文件，不带 restic/备份之类的无关脚本。
 COPY scripts/prune_threads.py ./scripts/prune_threads.py

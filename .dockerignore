@@ -14,7 +14,6 @@ tests
 experiments
 docs
 deploy
-migrations
 scripts/*
 # 保留一个文件会让父目录进入上下文；用 `scripts/*` 而不是 `scripts`，
 # 否则"父目录被排除后子文件无法再包含"的规则会让下面这行失效。

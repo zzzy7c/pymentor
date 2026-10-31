@@ -89,17 +89,20 @@ uv sync --group web
 # 2. 配置
 cp .env.example .env    # 填 DEEPSEEK_API_KEY
 
-# 3. 语料与索引（首次；幂等，可重跑）
+# 3. 建库（首次；幂等，可重跑）。业务表 + LangGraph 检查点/Store 表都在这一步建
+uv run alembic upgrade head
+
+# 4. 语料与索引（首次；幂等，可重跑）
 #    先抓官方文档与 PEP，再向量化。全量 ingest 耗时较长，务必看日志确认完成。
 uv run python -m pyassist.rag.ingest --fetch
 
-# 4. 沙箱镜像（宿主构建，compose 不负责）
+# 5. 沙箱镜像（宿主构建，compose 不负责）
 docker build -f src/pyassist/sandbox/Dockerfile.sandbox -t pyassist-sandbox:1 .
 
-# 5. 后端
+# 6. 后端
 uv run uvicorn pyassist.api.main:app --reload
 
-# 6. 前端（另一个终端）
+# 7. 前端（另一个终端）
 uv run streamlit run frontend/streamlit_app.py
 ```
 
@@ -108,9 +111,11 @@ uv run streamlit run frontend/streamlit_app.py
 只用容器跑开发环境：
 
 ```bash
-# 先按上面第 4 步构建沙箱镜像
+# 先按上面第 5 步构建沙箱镜像
 export DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)   # Linux；Docker Desktop 可省略
 docker compose up --build
+# 首次还要建库（幂等）
+docker compose exec api alembic upgrade head
 ```
 
 ---
