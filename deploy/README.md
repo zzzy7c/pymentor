@@ -21,6 +21,10 @@
 这不是偏好，是能力约束。也**不要**为了省事把沙箱并入 api 容器 —— 那等于把“执行任意用户代码”
 和“持有密钥、数据库、Docker socket”放进同一个进程边界。
 
+**备选形态：本机 + Cloudflare Tunnel**（没有公网 IP、不租 VM 时用）。见 [tunnel.md](tunnel.md)。
+它保留同一份镜像、同一套路由、同一个 socket 边界，代价是数据落在命名卷而不是 `./data`、
+隧道地址每次重启都变、机器关机即下线。**不要**用 `prod.compose.yml` 去凑一个"本机公网"。
+
 ---
 
 ## 2. 威胁模型（必读）
@@ -95,6 +99,8 @@ api 容器挂载 `/var/run/docker.sock` 之后，**容器内任何能调用 Dock
 - [ ] 域名 A/AAAA 记录已指向本机；`export DOMAIN=your.domain`
 - [ ] `docker compose -f deploy/prod.compose.yml config` 无报错
 - [ ] `docker compose -f deploy/prod.compose.yml up -d --build`
+- [ ] 建库（首次；幂等）：`docker compose -f deploy/prod.compose.yml exec api alembic upgrade head`
+      —— 业务表与 LangGraph 的检查点/Store 表都在这一步建，跳过会让 `/history` 等接口报“表不存在”
 - [ ] `/health` → `status=ok`、`database_ok=true`、`sandbox_ok=true`
       （生产 compose **不发布** 8000，只能从容器内探：
       `docker compose -f deploy/prod.compose.yml exec api python -c "import urllib.request; print(urllib.request.urlopen('http://127.0.0.1:8000/health').read().decode())"`）
@@ -107,6 +113,7 @@ api 容器挂载 `/var/run/docker.sock` 之后，**容器内任何能调用 Dock
 - [ ] `uv lock` 与 `pyproject.toml` 同步提交；镜像构建用 `--frozen`
 - [ ] 离线回归：`uv run ruff check . && uv run mypy --strict src/pyassist && uv run pytest`
 - [ ] `docker compose -f deploy/prod.compose.yml up -d --build`
+- [ ] `docker compose -f deploy/prod.compose.yml exec api alembic upgrade head`（幂等）
 - [ ] 观察 `/health` 与日志至少 10 分钟，再结束维护窗口
 
 ### 3.3 明确“未验证”的项目

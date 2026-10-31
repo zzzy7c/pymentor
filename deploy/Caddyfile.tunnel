@@ -1,0 +1,30 @@
+# 方案 B（本机 + Cloudflare Tunnel）用的 Caddy 配置。见 deploy/tunnel.md。
+#
+# 与 deploy/Caddyfile 的唯一差别：**没有 Automatic HTTPS**。
+# 证书在 Cloudflare 边缘终止，cloudflared 与 caddy 之间是明文 http ——
+# 这段明文只走同一 compose 网络里的回环，不出宿主机，也不经过任何第三方。
+#
+# 路由刻意与生产保持一致（/api/* → api:8000，其余 → web:8501），
+# 这样 deploy/README.md 里的验收命令把 `https://$DOMAIN` 换成隧道地址就能直接跑。
+#
+# 要开鉴权就用 Caddyfile.tunnel-auth（同一个 compose，靠 CADDYFILE 变量切换）。
+
+:80 {
+	encode zstd gzip
+
+	# handle_path 而不是 reverse_proxy /api/*：后者会把 /api 前缀一起转给 FastAPI，
+	# 后端没有这个前缀，结果是 404（与生产同一个坑，见 deploy/Caddyfile）。
+	handle_path /api/* {
+		reverse_proxy api:8000 {
+			# 有多少发多少，否则 SSE 会被攒成一次性吐出。
+			# 隧道这一跳最容易缓冲，改完必须实测（tunnel.md §4 第 6 条）。
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:8501 {
+			flush_interval -1
+		}
+	}
+}

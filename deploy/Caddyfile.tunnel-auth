@@ -1,0 +1,31 @@
+# 带 basic_auth 的方案 B 配置。启动前必须给两个变量，否则容器直接起不来
+# （这是有意的：空凭据的 basic_auth 等于没配，静默降级比报错危险）：
+#
+#   export BASIC_AUTH_USER=pyassist
+#   export BASIC_AUTH_HASH=$(docker run --rm caddy:2.8-alpine \
+#       caddy hash-password --plaintext '你的密码')
+#   export CADDYFILE=Caddyfile.tunnel-auth
+#   docker compose -f deploy/tunnel.compose.yml up -d
+#
+# 注意 hash 是 bcrypt，含 `$`，在 shell 里要**用单引号赋值**，
+# 否则 `$2a$14$...` 会被 shell 展开成空串（这是最常见的"密码明明对却 401"）。
+
+:80 {
+	encode zstd gzip
+
+	basic_auth {
+		{$BASIC_AUTH_USER} {$BASIC_AUTH_HASH}
+	}
+
+	handle_path /api/* {
+		reverse_proxy api:8000 {
+			flush_interval -1
+		}
+	}
+
+	handle {
+		reverse_proxy web:8501 {
+			flush_interval -1
+		}
+	}
+}

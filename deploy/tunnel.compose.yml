@@ -1,0 +1,103 @@
+# 方案 B 编排：本机（WSL2 + Docker Desktop）+ Cloudflare Tunnel。
+# 操作手册见 deploy/tunnel.md；为什么不是 PaaS 见 deploy/README.md §1。
+#
+# 与 deploy/prod.compose.yml **同形**：同样的 api/web 镜像、同样挂 docker.sock、
+# 同样的 `/api/* → api:8000` 与 `* → web:8501` 路由（这次由 Caddyfile.tunnel 承载）。
+# 差别只有三处，每一处都有代价，写在下面而不是藏着：
+#
+#   1. **没有 Automatic HTTPS**。本机没有公网 IP、80/443 也进不来，
+#      证书只能在 Cloudflare 边缘终止，cloudflared → caddy 之间是明文。
+#   2. **数据不是 `../data` 宿主目录，而是命名卷 `pyassist_data`**。
+#      这不是图省事：Windows 宿主目录经 9p 共享进容器后，**WAL 模式的 SQLite 打不开** ——
+#      实测同一目录下新建库成功、打开已有的 app.db 却 `disk I/O error`。
+#      命名卷落在 Docker Desktop VM 的 ext4 上，WAL 正常（种子数据用 deploy/seed_volume.sh）。
+#      代价：容器数据与仓库里的 `./data` 是两份，备份/导出见 tunnel.md §6。
+#   3. **不开放任何入站端口**。对外靠 cloudflared 的出站长连接；
+#      api/web/caddy 只绑 127.0.0.1，方便本机验收，局域网与公网都打不到。
+
+name: pyassist-tunnel
+
+services:
+  api:
+    build:
+      context: ..
+      dockerfile: Dockerfile.api
+    # 密钥只进容器。**不要在下面再写一份 `environment:` 覆盖同名键** ——
+    # `environment:` 优先级高于 `env_file`，写一句 `DEEPSEEK_API_KEY:` 会把真密钥覆盖成空串，
+    # 服务照起、每个请求 401，看起来像"密钥没配"（生产 compose 里同一个坑）。
+    env_file:
+      - path: ../.env
+        required: false
+    environment:
+      # 模型权重预置在卷里之后（见 tunnel.md §5.1），置 1 可跳过每次进程启动时的
+      # 联网探测：本机实测加载 15.1 s → 7.8 s。默认 0 = 标准行为（会去 HF 查更新）。
+      HF_HUB_OFFLINE: ${HF_HUB_OFFLINE:-0}
+    volumes:
+      # 业务库 + 检查点 + 语料 + 向量库 + 模型权重，全在这一个卷（§2 两份状态同一个库）。
+      # 没有像生产那样再单挂一条 hf：`/app/data/hf` 本来就在卷里，多挂一条只会制造
+      # "宿主目录没建 → Docker 建个 root 属主的空目录 → uid 10001 写不进去"的经典故障。
+      - pyassist_data:/app/data
+      # 沙箱由 api 通过宿主 daemon 创建。**这一行等于把宿主 root 借给 api 容器**，
+      # 威胁模型见 deploy/README.md §2.1 —— 本机演示同样成立，别在这台机器上跑别的业务。
+      - ${DOCKER_SOCKET:-/var/run/docker.sock}:/var/run/docker.sock
+    # socket 通常属 root:docker(660)，补上组 GID，非 root 的 app 用户才连得上。
+    # WSL 里取法：export DOCKER_GID=$(stat -c '%g' /var/run/docker.sock)
+    # 本机实测 WSL=1001；从 Windows 侧跑则 socket 在容器内是 gid 0（见 tunnel.md §2）。
+    group_add:
+      - "${DOCKER_GID:-0}"
+    ports:
+      # 只绑回环。公网入口只有 cloudflared，这里纯粹给本机 curl 验收用。
+      # **端口可配**：本机已有进程占用 8000（本机直跑的那套）时，
+      # 用 PYASSIST_API_PORT=18000 换一个，不必去停别人的服务。
+      - "127.0.0.1:${PYASSIST_API_PORT:-8000}:8000"
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ..
+      dockerfile: Dockerfile.web
+    environment:
+      # 前端在容器内直接调 api，**不经过隧道**：浏览器只跟 Streamlit 说话（§2 数据流）。
+      # 所以整条链路上公网只暴露一个 8501。
+      PYASSIST_API_BASE_URL: http://api:8000
+    ports:
+      # 与 api 同理：本机 8501 常被正在跑的 Streamlit 占着。
+      - "127.0.0.1:${PYASSIST_WEB_PORT:-8501}:8501"
+    depends_on:
+      api:
+        # 等 /health 真可用再起前端，否则首屏必然显示"API 不可用"。
+        condition: service_healthy
+    restart: unless-stopped
+
+  caddy:
+    image: caddy:2.8-alpine
+    # 无鉴权 / 有鉴权两套配置，用 CADDYFILE 选：
+    #   CADDYFILE=Caddyfile.tunnel        （默认）
+    #   CADDYFILE=Caddyfile.tunnel-auth   （basic_auth，变量见 tunnel.md §2）
+    volumes:
+      - ./${CADDYFILE:-Caddyfile.tunnel}:/etc/caddy/Caddyfile:ro
+    environment:
+      BASIC_AUTH_USER: ${BASIC_AUTH_USER:-}
+      BASIC_AUTH_HASH: ${BASIC_AUTH_HASH:-}
+    ports:
+      # 本机直连 Caddy（等价于生产的 443）：curl http://127.0.0.1:${PYASSIST_HTTP_PORT:-8080}/api/health
+      - "127.0.0.1:${PYASSIST_HTTP_PORT:-8080}:80"
+    depends_on:
+      - web
+    restart: unless-stopped
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    # Quick Tunnel：随机 `https://<words>.trycloudflare.com`，不要域名、不要账号。
+    # URL 只在日志里，且**每次重启都变**：
+    #   docker compose -f deploy/tunnel.compose.yml logs cloudflared | grep -o 'https://[^ ]*trycloudflare.com'
+    # 要固定地址就换 named tunnel（tunnel.md §7）。
+    command: ["tunnel", "--no-autoupdate", "--url", "http://caddy:80"]
+    depends_on:
+      - caddy
+    restart: unless-stopped
+
+volumes:
+  # 显式 name：不跟项目名走，seed_volume.sh、备份命令、迁移命令都能写死这一个名字。
+  pyassist_data:
+    name: pyassist_data
