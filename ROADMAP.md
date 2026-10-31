@@ -668,11 +668,13 @@ Docker Desktop（WSL2 后端）已装并实测跑通：引擎 **29.8.1**、Compo
 - 实时爬取的问题：慢、易被限流、上游改版即断，且 eval 基线会随上游漂移，破坏回归基线。
 - 落点：`data/corpus/`，由 `rag/ingest.py` 消费。**禁止手工编辑**（§4）。
 
-### 4. `DEEPSEEK_API_KEY` 未设置
+### 4. ~~`DEEPSEEK_API_KEY` 未设置~~ ✅ 已解决（2026-10-30）
 
-真实模型调用与启动时的 `models.list()` 校验都跑不了，只能 mock。
-
-需拍板：`/health` 在缺 key 时是**硬失败**还是**警告**？并补一条 runbook 步骤说明如何手动跑模型名校验。
+本机已配置 key，模型名校验真机通过：`--check-models` 退出码 0，
+`available=['deepseek-flash', 'deepseek-v4-pro']`，`/health.model_check_ok=true`
+（`status=degraded` 仅因本机未起 Docker，`sandbox_ok=false`）。缺 key 时的策略已定为
+**警告不硬失败**：`/health` 恒 200、`model_check_ok=false`。手动跑校验的命令与结论见
+`docs/decisions/0001-模型名校验结论.md`。
 
 ### 5. 单日 Token 熔断阈值与错峰调度
 
